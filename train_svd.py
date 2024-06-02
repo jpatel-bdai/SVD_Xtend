@@ -126,7 +126,7 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 
 
 class DummyDataset(Dataset):
-    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=10):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -143,7 +143,6 @@ class DummyDataset(Dataset):
         self.sample_frames = sample_frames
         
         self._load_video_paths()
-        # self.__getitem__(0)
     
     def get_video_from_image(image):
         # Load the conditioning image
@@ -166,39 +165,6 @@ class DummyDataset(Dataset):
         root_dir = Path(self.rtx_root_dir)
         self.datasets = [d for d in root_dir.iterdir() if d.is_dir()]
         print(f"Found {len(self.datasets)} datasets.")
-        # print(f"Counting total number of episodes ...")
-        # total_episodes = 0
-        # for dataset in self.datasets:
-        #     print(f"Dataset : {dataset.name}")
-        #     num_episodes = 0
-        #     image_dir = dataset / "data" / "images"
-        #     image_key = next(image_dir.iterdir()).name
-        #     image_dir = image_dir / image_key
-        #     image_key = "images/" + image_key
-        #     lang_dir = dataset / "data" / "language_instruction"
-            
-        #     lang_npz = sorted(lang_dir.glob('*.npz'))
-        #     video_npz = sorted(image_dir.glob('*.npz'))
-            
-        #     for (idx, videos) in enumerate(video_npz):
-        #         videos = np.load(videos, allow_pickle=True)[image_key]
-        #         lang_instructions = np.load(lang_npz[idx],allow_pickle=True)["language_instruction"]
-        #         assert len(lang_instructions)==len(videos), f"Expected language_instructions to be equal to episodes"
-        #         num_episodes += len(videos)
-        #         print(f'num_episodes : {num_episodes}')
-        #     total_episodes += num_episodes
-        #     print(f"Num episodes = {num_episodes} Total episodes = {total_episodes}")
-            
-                # for video_idx , video in enumerate(videos):
-                #     lang_instruction = lang_instructions[video_idx][0].decode("utf-8")
-                #     image_cond = video[0]
-                #     pred_videp = self.get_video_from_image(Image.fromarray(image_cond))
-                #     video = video.transpose(0, 3, 1, 2)
-                #     wandb.log({f"{dataset.name}/{lang_instruction}/{idx}_{video_idx}/gt": wandb.Video(video, fps=4)})
-                #     wandb.log({f"{dataset.name}/{lang_instruction}/{idx}_{video_idx}/pred": wandb.Video(pred_videp, fps=4)})
-                #     if video_idx>1: break
-                # if idx>1: break
-        # breakpoint()
 
     def __len__(self):
         return self.num_samples
@@ -212,19 +178,25 @@ class DummyDataset(Dataset):
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         """
         # Randomly select a dataset
-        chosen_dataset = random.choice(self.datasets)
-        
-        image_dir = chosen_dataset / "data" / "images"
-        image_key = next(image_dir.iterdir()).name
-        image_dir = image_dir / image_key
-        image_key = "images/" + image_key
-        lang_dir = chosen_dataset / "data" / "language_instruction"
-        video_npz = sorted(image_dir.glob('*.npz'))
-        episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
+        found_episode = False
+        while not found_episode:
+            chosen_dataset = random.choice(self.datasets)
 
-        # Randomly select an episode from episodes
-        episode = episodes[np.random.randint(episodes.shape[0])]
-        
+            image_dir = chosen_dataset / "data" / "images"
+            image_key = next(image_dir.iterdir()).name
+            image_dir = image_dir / image_key
+            image_key = "images/" + image_key
+            lang_dir = chosen_dataset / "data" / "language_instruction"
+            video_npz = sorted(image_dir.glob('*.npz'))
+            episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
+
+            # Randomly select an episode from episodes
+            episode = episodes[np.random.randint(episodes.shape[0])]
+
+            if len(episode)>self.sample_frames:
+                found_episode = True
+            else:
+                print(f"Finding new episode, Length of current episode : {len(episode)}")
         # breakpoint()
         # folder_path = chosen_dataset
         # frames = os.listdir(folder_path)
@@ -721,7 +693,7 @@ def download_image(url):
 validation_images = []
 def save_validation_images(train_dataloader):
     for step, batch in enumerate(train_dataloader):
-        if step > 10: break
+        if step > 9: break
         img_tensor = batch['pixel_values'][0][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (img_tensor + 1) / 2
