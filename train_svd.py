@@ -60,6 +60,17 @@ check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
 
+import wandb
+from pathlib import Path
+import time
+import glob
+import os
+
+root_dir = Path("/storage/nvme/results")
+Path(root_dir / "wandb").mkdir(exist_ok=True)
+timestr = time.strftime("%Y%m%d-%H%M%S")
+wandb.init(project="avdc_jpatel", dir=root_dir, id=timestr, name=f"svd_finetuned_rtx", resume=False, job_type="training")
+
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
     """Draws stratified samples from a uniform distribution."""
@@ -115,7 +126,7 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 
 
 class DummyDataset(Dataset):
-    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=10):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -123,12 +134,71 @@ class DummyDataset(Dataset):
         """
         self.num_samples = num_samples
         # Define the path to the folder containing video frames
-        self.base_folder = 'bdd100k/images/track/mini'
-        self.folders = os.listdir(self.base_folder)
+        self.rtx_root_dir = '/storage/nfs/jpatel/rtx_dataset_with_language'
+        # self.datasets = os.listdir(self.base_folder) 
+        # self.folders = os.listdir(self.base_folder)
         self.channels = 3
         self.width = width
         self.height = height
         self.sample_frames = sample_frames
+        
+        self._load_video_paths()
+        # self.__getitem__(0)
+    
+    def get_video_from_image(image):
+        # Load the conditioning image
+        image = image.resize((1024, 576))
+        generator = torch.manual_seed(42)
+        frames = pipe(image, decode_chunk_size=8, generator=generator).frames[0]
+
+        image_arrays = []
+        for frame in frames:
+            img_array = np.array(frame)
+            # Append the image array to the list
+            image_arrays.append(img_array)
+
+        # Convert the list of image arrays to a single NumPy array (if needed)
+        # This will create a 4D array where the first dimension is the number of images
+        image_stack = np.stack(image_arrays, axis=0).transpose(0, 3, 1, 2)
+        return image_stack
+
+    def _load_video_paths(self):
+        root_dir = Path(self.rtx_root_dir)
+        self.datasets = [d for d in root_dir.iterdir() if d.is_dir()]
+        print(f"Found {len(self.datasets)} datasets.")
+        # print(f"Counting total number of episodes ...")
+        # total_episodes = 0
+        # for dataset in self.datasets:
+        #     print(f"Dataset : {dataset.name}")
+        #     num_episodes = 0
+        #     image_dir = dataset / "data" / "images"
+        #     image_key = next(image_dir.iterdir()).name
+        #     image_dir = image_dir / image_key
+        #     image_key = "images/" + image_key
+        #     lang_dir = dataset / "data" / "language_instruction"
+            
+        #     lang_npz = sorted(lang_dir.glob('*.npz'))
+        #     video_npz = sorted(image_dir.glob('*.npz'))
+            
+        #     for (idx, videos) in enumerate(video_npz):
+        #         videos = np.load(videos, allow_pickle=True)[image_key]
+        #         lang_instructions = np.load(lang_npz[idx],allow_pickle=True)["language_instruction"]
+        #         assert len(lang_instructions)==len(videos), f"Expected language_instructions to be equal to episodes"
+        #         num_episodes += len(videos)
+        #         print(f'num_episodes : {num_episodes}')
+        #     total_episodes += num_episodes
+        #     print(f"Num episodes = {num_episodes} Total episodes = {total_episodes}")
+            
+                # for video_idx , video in enumerate(videos):
+                #     lang_instruction = lang_instructions[video_idx][0].decode("utf-8")
+                #     image_cond = video[0]
+                #     pred_videp = self.get_video_from_image(Image.fromarray(image_cond))
+                #     video = video.transpose(0, 3, 1, 2)
+                #     wandb.log({f"{dataset.name}/{lang_instruction}/{idx}_{video_idx}/gt": wandb.Video(video, fps=4)})
+                #     wandb.log({f"{dataset.name}/{lang_instruction}/{idx}_{video_idx}/pred": wandb.Video(pred_videp, fps=4)})
+                #     if video_idx>1: break
+                # if idx>1: break
+        # breakpoint()
 
     def __len__(self):
         return self.num_samples
@@ -141,45 +211,61 @@ class DummyDataset(Dataset):
         Returns:
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         """
-        # Randomly select a folder (representing a video) from the base folder
-        chosen_folder = random.choice(self.folders)
-        folder_path = os.path.join(self.base_folder, chosen_folder)
-        frames = os.listdir(folder_path)
-        # Sort the frames by name
-        frames.sort()
+        # Randomly select a dataset
+        chosen_dataset = random.choice(self.datasets)
+        
+        image_dir = chosen_dataset / "data" / "images"
+        image_key = next(image_dir.iterdir()).name
+        image_dir = image_dir / image_key
+        image_key = "images/" + image_key
+        lang_dir = chosen_dataset / "data" / "language_instruction"
+        video_npz = sorted(image_dir.glob('*.npz'))
+        episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
+
+        # Randomly select an episode from episodes
+        episode = episodes[np.random.randint(episodes.shape[0])]
+        
+        # breakpoint()
+        # folder_path = chosen_dataset
+        # frames = os.listdir(folder_path)
+        # # Sort the frames by name
+        # frames.sort()
 
         # Ensure the selected folder has at least `sample_frames`` frames
-        if len(frames) < self.sample_frames:
-            raise ValueError(
-                f"The selected folder '{chosen_folder}' contains fewer than `{self.sample_frames}` frames.")
+        # if len(frames) < self.sample_frames:
+        #     raise ValueError(
+        #         f"The selected folder '{chosen_folder}' contains fewer than `{self.sample_frames}` frames.")
 
         # Randomly select a start index for frame sequence
-        start_idx = random.randint(0, len(frames) - self.sample_frames)
-        selected_frames = frames[start_idx:start_idx + self.sample_frames]
+        # start_idx = random.randint(0, len(frames) - self.sample_frames)
+        # start_idx = 0
+        # selected_frames = frames[start_idx:start_idx + self.sample_frames]
 
         # Initialize a tensor to store the pixel values
         pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
-        for i, frame_name in enumerate(selected_frames):
-            frame_path = os.path.join(folder_path, frame_name)
-            with Image.open(frame_path) as img:
-                # Resize the image and convert it to a tensor
-                img_resized = img.resize((self.width, self.height))
-                img_tensor = torch.from_numpy(np.array(img_resized)).float()
+        for i, frame in enumerate(episode):
+            if i > 24: break
+            # Resize the image and convert it to a tensor
+            img_resized = cv2.resize(frame, (self.width, self.height))
+            
+            # img_resized = np.resize(frame, (self.height, self.width, 3))
+            img_tensor = torch.from_numpy(img_resized).float()
+            
+            # Normalize the image by scaling pixel values to [-1, 1]
+            img_normalized = img_tensor / 127.5 - 1
 
-                # Normalize the image by scaling pixel values to [-1, 1]
-                img_normalized = img_tensor / 127.5 - 1
+            # Rearrange channels if necessary
+            if self.channels == 3:
+                img_normalized = img_normalized.permute(
+                    2, 0, 1)  # For RGB images
+            elif self.channels == 1:
+                img_normalized = img_normalized.mean(
+                    dim=2, keepdim=True)  # For grayscale images
 
-                # Rearrange channels if necessary
-                if self.channels == 3:
-                    img_normalized = img_normalized.permute(
-                        2, 0, 1)  # For RGB images
-                elif self.channels == 1:
-                    img_normalized = img_normalized.mean(
-                        dim=2, keepdim=True)  # For grayscale images
+            pixel_values[i] = img_normalized
 
-                pixel_values[i] = img_normalized
         return {'pixel_values': pixel_values}
 
 # resizing utils
@@ -380,7 +466,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=1,
+        default=10,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -556,7 +642,7 @@ def parse_args():
     parser.add_argument(
         "--report_to",
         type=str,
-        default="tensorboard",
+        default="wandb",
         help=(
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
@@ -631,6 +717,32 @@ def download_image(url):
     )(url)
     return original_image
 
+
+validation_images = []
+def save_validation_images(train_dataloader):
+    for step, batch in enumerate(train_dataloader):
+        if step > 10: break
+        img_tensor = batch['pixel_values'][0][0]
+        # Normalize the tensor values from [-1, 1] to [0, 1]
+        normalized_tensor = (img_tensor + 1) / 2
+
+        # Convert the normalized tensor to the range [0, 255]
+        array = (normalized_tensor * 255).permute(1, 2, 0).byte().numpy()
+
+        # Convert the NumPy array to a PIL Image
+        image = Image.fromarray(array)
+        image_path = f'save_img_{step}.png'
+        validation_images.append(image_path)
+        # Save the image
+        image.save(image_path)
+        
+        video_tensor = batch['pixel_values'][0]
+        # Normalize the tensor values from [-1, 1] to [0, 1]
+        normalized_tensor = (video_tensor + 1) / 2
+
+        # Convert the normalized tensor to the range [0, 255]
+        array = (normalized_tensor * 255).byte().numpy()
+        wandb.log({f"step_val_img_{step}/gt": wandb.Video(array, fps=4)}, commit=False)
 
 def main():
     args = parse_args()
@@ -854,6 +966,7 @@ def main():
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
     train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    # breakpoint()
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -861,6 +974,10 @@ def main():
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
+    
+    save_validation_images(train_dataloader)    
+    
+    # print(next)
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1187,10 +1304,12 @@ def main():
                         with torch.autocast(
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
+                            val_images = validation_images
+                            
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image('demo.jpg').resize((args.width, args.height)),
+                                    load_image(val_images[val_img_idx]).resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
@@ -1209,6 +1328,9 @@ def main():
                                 for i in range(num_frames):
                                     img = video_frames[i]
                                     video_frames[i] = np.array(img)
+                                pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
+                                wandb.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, commit=False)
+                                
                                 export_to_gif(video_frames, out_file, 8)
 
                         if args.use_ema:

@@ -13,6 +13,16 @@
 
 ## Part 1: Training
 
+### Setting up repository
+```
+ImportError: /usr/local/lib/python3.10/dist-packages/transformer_engine_extensions.cpython-310-x86_64-linux-gnu.so: undefined symbol: _ZN5torch3jit17parseSchemaOrNameERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE
+```
+If you get the above error, run `pip uninstall transformers-engine` and then install dependencies from `requirements.txt` using the following command.
+
+```
+pip install -r requirements.txt`
+```
+
 ### Comparison
 ```python
 size=(512, 320), motion_bucket_id=127, fps=7, noise_aug_strength=0.00
