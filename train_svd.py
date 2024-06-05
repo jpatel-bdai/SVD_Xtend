@@ -69,7 +69,10 @@ import os
 root_dir = Path("/storage/nvme/results")
 Path(root_dir / "wandb").mkdir(exist_ok=True)
 timestr = time.strftime("%Y%m%d-%H%M%S")
-wandb.init(project="avdc_jpatel", dir=root_dir, id=timestr, name=f"svd_finetuned_rtx", resume=False, job_type="training")
+
+# local_rank = os.environ['LOCAL_RANK']
+# if local_rank == 0:
+#     wandb.init(project="avdc_jpatel", dir=root_dir, id=timestr, name=f"svd_finetuned_rtx", resume=False, job_type="training")
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
@@ -126,7 +129,7 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 
 
 class DummyDataset(Dataset):
-    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=15):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -163,7 +166,8 @@ class DummyDataset(Dataset):
 
     def _load_video_paths(self):
         root_dir = Path(self.rtx_root_dir)
-        self.datasets = [d for d in root_dir.iterdir() if d.is_dir()]
+        # Mpdified to use only a single dataset
+        self.datasets = [d for d in root_dir.iterdir() if (d.is_dir() and "bridge" in str(d))]
         print(f"Found {len(self.datasets)} datasets.")
 
     def __len__(self):
@@ -218,7 +222,7 @@ class DummyDataset(Dataset):
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > 24: break
+            if i > (self.sample_frames-1): break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
             
@@ -423,7 +427,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=25,
+        default=15,
     )
     parser.add_argument(
         "--width",
@@ -691,9 +695,10 @@ def download_image(url):
 
 
 validation_images = []
-def save_validation_images(train_dataloader):
+def save_validation_images(train_dataloader, accelerator, num_validaton_images):
+    saved_imgs = 0
     for step, batch in enumerate(train_dataloader):
-        if step > 9: break
+        if saved_imgs > num_validaton_images: break
         img_tensor = batch['pixel_values'][0][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (img_tensor + 1) / 2
@@ -703,7 +708,7 @@ def save_validation_images(train_dataloader):
 
         # Convert the NumPy array to a PIL Image
         image = Image.fromarray(array)
-        image_path = f'save_img_{step}.png'
+        image_path = f'save_img_{saved_imgs}.png'
         validation_images.append(image_path)
         # Save the image
         image.save(image_path)
@@ -714,7 +719,8 @@ def save_validation_images(train_dataloader):
 
         # Convert the normalized tensor to the range [0, 255]
         array = (normalized_tensor * 255).byte().numpy()
-        wandb.log({f"step_val_img_{step}/gt": wandb.Video(array, fps=4)}, commit=False)
+        accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
+        saved_imgs += 1
 
 def main():
     args = parse_args()
@@ -738,6 +744,12 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
         # kwargs_handlers=[ddp_kwargs]
+    )
+    
+    accelerator.init_trackers(
+        project_name="avdc_jpatel",
+        # config={"dropout": 0.1, "learning_rate": 1e-2}
+        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_finetuned_rtx_bridge"}}
     )
 
     generator = torch.Generator(
@@ -946,8 +958,8 @@ def main():
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
-    
-    save_validation_images(train_dataloader)    
+
+    save_validation_images(train_dataloader, accelerator, args.num_validation_images)
     
     # print(next)
 
@@ -1035,9 +1047,9 @@ def main():
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
-        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
+        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
             len(add_time_ids)
-        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
+        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
@@ -1291,7 +1303,7 @@ def main():
                                     noise_aug_strength=0.02,
                                     # generator=generator,
                                 ).frames[0]
-
+                                print("Uploading validation images")
                                 out_file = os.path.join(
                                     val_save_dir,
                                     f"step_{global_step}_val_img_{val_img_idx}.mp4",
@@ -1301,8 +1313,7 @@ def main():
                                     img = video_frames[i]
                                     video_frames[i] = np.array(img)
                                 pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
-                                wandb.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, commit=False)
-                                
+                                accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
                                 export_to_gif(video_frames, out_file, 8)
 
                         if args.use_ema:
