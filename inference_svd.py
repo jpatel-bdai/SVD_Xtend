@@ -54,13 +54,6 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available, lo
 from diffusers.utils.import_utils import is_xformers_available
 
 from torch.utils.data import Dataset
-import numpy as np
-import os
-from pathlib import Path
-import json
-import time
-import wandb
-import cv2
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
@@ -136,7 +129,7 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 
 
 class DummyDataset(Dataset):
-    def __init__(self, num_samples=1000, width=1024, height=576, sample_frames=15):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=15):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -145,6 +138,8 @@ class DummyDataset(Dataset):
         self.num_samples = num_samples
         # Define the path to the folder containing video frames
         self.rtx_root_dir = '/storage/nfs/jpatel/rtx_dataset_with_language'
+        # self.datasets = os.listdir(self.base_folder) 
+        # self.folders = os.listdir(self.base_folder)
         self.channels = 3
         self.width = width
         self.height = height
@@ -155,55 +150,8 @@ class DummyDataset(Dataset):
     def _load_video_paths(self):
         root_dir = Path(self.rtx_root_dir)
         # Mpdified to use only a single dataset
-        self.datasets = [d for d in root_dir.iterdir() if d.is_dir()]
+        self.datasets = [d for d in root_dir.iterdir() if (d.is_dir() and "bridge" in str(d))]
         print(f"Found {len(self.datasets)} datasets.")
-
-    def calculate_flow_between_frames(self, image1, image2):
-        prvs = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
-        hsv = np.zeros_like(image2)
-        hsv[..., 1] = 255
-        image2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(prvs, image2, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-        magnitude = np.linalg.norm(mag) / (np.prod(mag.shape) / 10000)
-        return magnitude
-
-    def estimate_flow(self, video):
-        magnitudes = []
-        for idx in range(video.shape[0]-1):
-            current_img = video[idx]
-            next_img = video[idx+1]
-            magnitude = self.calculate_flow_between_frames(current_img, next_img)
-            magnitudes.append(magnitude)
-        return magnitudes
-
-    def trim_video_with_flow_threshold(self, video, flow_threshold, num_frames):
-        trimmed_video = []
-        trimmed_video.append(video[0])
-        idx = 0
-        skipped_frames = 0
-        while len(trimmed_video) < num_frames:
-            current_img = video[idx]
-            while idx < (video.shape[0]-2):
-                next_img = video[idx+1]
-                magnitude = self.calculate_flow_between_frames(current_img, next_img)
-                if(magnitude>flow_threshold):
-                    trimmed_video.append(next_img)
-                    idx += 1
-                    break
-                else:
-                    skipped_frames += 1
-                    idx += 1
-            if(idx==(video.shape[0]-2)):
-                break
-                
-        if len(trimmed_video) < num_frames:
-            print(f"Did not find {num_frames} frames, only found {len(trimmed_video)} frames :( !!")
-            return None, -1
-        
-        trimmed_video = np.array(trimmed_video)
-        
-        return trimmed_video, skipped_frames
 
     def __len__(self):
         return self.num_samples
@@ -232,36 +180,11 @@ class DummyDataset(Dataset):
             # Randomly select an episode from episodes
             episode = episodes[np.random.randint(episodes.shape[0])]
 
-            # if len(episode) <= self.sample_frames:
-            #     continue
-            # elif len(episode) > self.sample_frames and len(episode) <= (2*self.sample_frames):
-            #     N = len(episode)
-            #     samples = []
-            #     for i in range(self.sample_frames-1):
-            #         samples.append(int(i*(N-1)/(self.sample_frames-1)))
-            #     samples.append(N-1)
-            #     final_video = [episode[i] for i in samples]
-            #     episode = final_video
-            #     found_episode = True
-            # else:
-            #     original_len = len(episode)
-            #     if len(episode) > 250:
-            #         episode = episode[:250]
-            #     magnitudes = self.estimate_flow(episode)
-            #     rem_frames = len(magnitudes) - (2 * self.sample_frames)
-            #     flow_threshold = sorted(magnitudes)[rem_frames]
-            #     episode, skipped_frames = self.trim_video_with_flow_threshold(episode, flow_threshold, self.sample_frames)
-            #     if skipped_frames == -1:
-            #         print("Trimmed video not found!!")
-            #         continue
-            #     else:
-            #         found_episode = True
-            
             if len(episode)>self.sample_frames:
                 found_episode = True
             else:
                 print(f"Finding new episode, Length of current episode : {len(episode)}")
-        
+        # breakpoint()
         # folder_path = chosen_dataset
         # frames = os.listdir(folder_path)
         # # Sort the frames by name
@@ -486,7 +409,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=25,
+        default=15,
     )
     parser.add_argument(
         "--width",
@@ -501,7 +424,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=10,
+        default=20,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -516,7 +439,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs_test",
+        default="./outputs",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -754,6 +677,7 @@ def download_image(url):
 
 
 validation_images = []
+validation_images_pil = []
 def save_validation_images(train_dataloader, accelerator, num_validaton_images):
     saved_imgs = 0
     for step, batch in enumerate(train_dataloader):
@@ -767,10 +691,14 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
 
         # Convert the NumPy array to a PIL Image
         image = Image.fromarray(array)
-        image_path = f'save_flow_img_{saved_imgs}.png'
-        validation_images.append(image_path)
-        # Save the image
-        image.save(image_path)
+        
+        # Not saving the image instead keeping it in memory
+        # image_path = f'save_img_{saved_imgs}.png'
+        # validation_images.append(image_path)
+        # # Save the image
+        # image.save(image_path)
+
+        validation_images_pil.append(image)
         
         video_tensor = batch['pixel_values'][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
@@ -808,7 +736,7 @@ def main():
     accelerator.init_trackers(
         project_name="avdc_jpatel",
         # config={"dropout": 0.1, "learning_rate": 1e-2}
-        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_finetuned_rtx_flow"}}
+        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_finetuned_rtx_bridge"}}
     )
 
     generator = torch.Generator(
@@ -985,14 +913,6 @@ def main():
         eps=args.adam_epsilon,
     )
 
-    # optimizer = optimizer_cls(
-    #     unet.parameters(),
-    #     lr=args.learning_rate,
-    #     betas=(args.adam_beta1, args.adam_beta2),
-    #     weight_decay=args.adam_weight_decay,
-    #     eps=args.adam_epsilon,
-    # )
-
     # check parameters
     if accelerator.is_main_process:
         rec_txt1 = open('rec_para.txt', 'w')
@@ -1144,261 +1064,84 @@ def main():
             first_epoch = global_step // num_update_steps_per_epoch
             resume_step = resume_global_step % (
                 num_update_steps_per_epoch * args.gradient_accumulation_steps)
+    else:
+        raise ValueError(f"Resume checkpoint number not provided.")
 
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(global_step, args.max_train_steps),
                         disable=not accelerator.is_local_main_process)
     progress_bar.set_description("Steps")
+    breakpoint()
+    if (
+        (global_step % args.validation_steps == 0)
+        or (global_step == 1)
+    ):
+        logger.info(
+            f"Running validation... \n Generating {args.num_validation_images} videos."
+        )
+        # create pipeline
+        if args.use_ema:
+            # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
+            ema_unet.store(unet.parameters())
+            ema_unet.copy_to(unet.parameters())
+        # The models need unwrapping because for compatibility in distributed training mode.
+        pipeline = StableVideoDiffusionPipeline.from_pretrained(
+            args.pretrained_model_name_or_path,
+            unet=accelerator.unwrap_model(unet),
+            image_encoder=accelerator.unwrap_model(
+                image_encoder),
+            vae=accelerator.unwrap_model(vae),
+            revision=args.revision,
+            torch_dtype=weight_dtype,
+        )
+        pipeline = pipeline.to(accelerator.device)
+        pipeline.set_progress_bar_config(disable=True)
 
-    for epoch in range(first_epoch, args.num_train_epochs):
-        unet.train()
-        train_loss = 0.0
-        print("Starting to train")
-        for step, batch in enumerate(train_dataloader):
-            # Skip steps until we reach the resumed step
-            if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
-                if step % args.gradient_accumulation_steps == 0:
-                    progress_bar.update(1)
-                continue
+        # run inference
+        val_save_dir = os.path.join(
+            args.output_dir, "validation_images")
 
-            with accelerator.accumulate(unet):
-                # first, convert images to latent space.
-                
-                pixel_values = batch["pixel_values"].to(weight_dtype).to(
-                    accelerator.device, non_blocking=True
+        if not os.path.exists(val_save_dir):
+            os.makedirs(val_save_dir)
+
+        with torch.autocast(
+            str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
+        ):
+            val_images = validation_images
+            
+            for val_img_idx in range(args.num_validation_images):
+                num_frames = args.num_frames
+                video_frames = pipeline(
+                    # load_image(val_images[val_img_idx])
+                    validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                    height=args.height,
+                    width=args.width,
+                    num_frames=num_frames,
+                    decode_chunk_size=8,
+                    motion_bucket_id=127,
+                    fps=7,
+                    noise_aug_strength=0.02,
+                    # generator=generator,
+                ).frames[0]
+                print("Uploading validation images")
+                out_file = os.path.join(
+                    val_save_dir,
+                    f"step_{global_step}_val_img_{val_img_idx}.mp4",
                 )
-                # save_img_from_tensor(pixel_values[:, 0:1, :, :, :].squeeze(0).squeeze(0).cpu(), "first_frame")
-                
-                conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
 
-                latents = tensor_to_vae_latent(pixel_values, vae)
-                # single_latent = latents[:, 0:1, 0:1, :, :]
-                # save_img_from_tensor(latents[:, 0:1, 0:1, :, :].squeeze(0).squeeze(0).repeat(3,1,1).cpu(), "latents")
-                
+                for i in range(num_frames):
+                    img = video_frames[i]
+                    video_frames[i] = np.array(img)
+                pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
+                accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
+                export_to_gif(video_frames, out_file, 8)
 
-                # Sample noise that we'll add to the latents
-                noise = torch.randn_like(latents)
-                bsz = latents.shape[0]
+        if args.use_ema:
+            # Switch back to the original UNet parameters.
+            ema_unet.restore(unet.parameters())
 
-                cond_sigmas = rand_log_normal(shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
-                noise_aug_strength = cond_sigmas[0] # TODO: support batch > 1
-                cond_sigmas = cond_sigmas[:, None, None, None, None]
-                conditional_pixel_values = \
-                    torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
-                # save_img_from_tensor(conditional_pixel_values.squeeze(0).squeeze(0).cpu(), 'noised_pixels')
-                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
-                # save_img_from_tensor(conditional_latents.squeeze(0).cpu(), 'conditional_latents')
-                
-                conditional_latents = conditional_latents / vae.config.scaling_factor
-
-                # Sample a random timestep for each image
-                # P_mean=0.7 P_std=1.6
-                sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
-                # Add noise to the latents according to the noise magnitude at each timestep
-                # (this is the forward diffusion process)
-                sigmas = sigmas[:, None, None, None, None]
-                noisy_latents = latents + noise * sigmas
-                timesteps = torch.Tensor(
-                    [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
-
-                inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
-
-                # Get the text embedding for conditioning.
-                encoder_hidden_states = encode_image(
-                    pixel_values[:, 0, :, :, :].float())
-
-                # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
-                # However, I am unable to fully align with the calculation method of the motion score,
-                # so I adopted this approach. The same applies to the 'fps' (frames per second).
-                added_time_ids = _get_add_time_ids(
-                    7, # fixed
-                    127, # motion_bucket_id = 127, fixed
-                    noise_aug_strength, # noise_aug_strength == cond_sigmas
-                    encoder_hidden_states.dtype,
-                    bsz,
-                )
-                added_time_ids = added_time_ids.to(latents.device)
-
-                # Conditioning dropout to support classifier-free guidance during inference. For more details
-                # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
-                if args.conditioning_dropout_prob is not None:
-                    random_p = torch.rand(
-                        bsz, device=latents.device, generator=generator)
-                    # Sample masks for the edit prompts.
-                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
-                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
-                    # Final text conditioning.
-                    null_conditioning = torch.zeros_like(encoder_hidden_states)
-                    encoder_hidden_states = torch.where(
-                        prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
-                    # Sample masks for the original images.
-                    image_mask_dtype = conditional_latents.dtype
-                    image_mask = 1 - (
-                        (random_p >= args.conditioning_dropout_prob).to(
-                            image_mask_dtype)
-                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
-                    )
-                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
-                    # Final image conditioning.
-                    conditional_latents = image_mask * conditional_latents
-
-                # Concatenate the `conditional_latents` with the `noisy_latents`.
-                conditional_latents = conditional_latents.unsqueeze(
-                    1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
-                inp_noisy_latents = torch.cat(
-                    [inp_noisy_latents, conditional_latents], dim=2)
-
-                # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
-                target = latents
-                model_pred = unet(
-                    inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
-
-                # Denoise the latents
-                c_out = -sigmas / ((sigmas**2 + 1)**0.5)
-                c_skip = 1 / (sigmas**2 + 1)
-                denoised_latents = model_pred * c_out + c_skip * noisy_latents
-                weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
-
-                # MSE loss
-                loss = torch.mean(
-                    (weighing.float() * (denoised_latents.float() -
-                     target.float()) ** 2).reshape(target.shape[0], -1),
-                    dim=1,
-                )
-                loss = loss.mean()
-
-                # Gather the losses across all processes for logging (if we use distributed training).
-                avg_loss = accelerator.gather(
-                    loss.repeat(args.per_gpu_batch_size)).mean()
-                train_loss += avg_loss.item() / args.gradient_accumulation_steps
-
-                # Backpropagate
-                accelerator.backward(loss)
-                # if accelerator.sync_gradients:
-                #     accelerator.clip_grad_norm_(unet.parameters(), args.max_grad_norm)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-
-            # Checks if the accelerator has performed an optimization step behind the scenes
-            if accelerator.sync_gradients:
-                if args.use_ema:
-                    ema_unet.step(unet.parameters())
-                progress_bar.update(1)
-                global_step += 1
-                accelerator.log({"train_loss": train_loss}, step=global_step)
-                train_loss = 0.0
-
-                if accelerator.is_main_process:
-                    # save checkpoints!
-                    if global_step % args.checkpointing_steps == 0:
-                        # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
-                        if args.checkpoints_total_limit is not None:
-                            checkpoints = os.listdir(args.output_dir)
-                            checkpoints = [
-                                d for d in checkpoints if d.startswith("checkpoint")]
-                            checkpoints = sorted(
-                                checkpoints, key=lambda x: int(x.split("-")[1]))
-
-                            # before we save the new checkpoint, we need to have at _most_ `checkpoints_total_limit - 1` checkpoints
-                            if len(checkpoints) >= args.checkpoints_total_limit:
-                                num_to_remove = len(
-                                    checkpoints) - args.checkpoints_total_limit + 1
-                                removing_checkpoints = checkpoints[0:num_to_remove]
-
-                                logger.info(
-                                    f"{len(checkpoints)} checkpoints already exist, removing {len(removing_checkpoints)} checkpoints"
-                                )
-                                logger.info(
-                                    f"removing checkpoints: {', '.join(removing_checkpoints)}")
-
-                                for removing_checkpoint in removing_checkpoints:
-                                    removing_checkpoint = os.path.join(
-                                        args.output_dir, removing_checkpoint)
-                                    shutil.rmtree(removing_checkpoint)
-
-                        save_path = os.path.join(
-                            args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
-                        logger.info(f"Saved state to {save_path}")
-                    # sample images!
-                    if (
-                        (global_step % args.validation_steps == 0)
-                        or (global_step == 1)
-                    ):
-                        logger.info(
-                            f"Running validation... \n Generating {args.num_validation_images} videos."
-                        )
-                        # create pipeline
-                        if args.use_ema:
-                            # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
-                            ema_unet.store(unet.parameters())
-                            ema_unet.copy_to(unet.parameters())
-                        # The models need unwrapping because for compatibility in distributed training mode.
-                        pipeline = StableVideoDiffusionPipeline.from_pretrained(
-                            args.pretrained_model_name_or_path,
-                            unet=accelerator.unwrap_model(unet),
-                            image_encoder=accelerator.unwrap_model(
-                                image_encoder),
-                            vae=accelerator.unwrap_model(vae),
-                            revision=args.revision,
-                            torch_dtype=weight_dtype,
-                        )
-                        pipeline = pipeline.to(accelerator.device)
-                        pipeline.set_progress_bar_config(disable=True)
-
-                        # run inference
-                        val_save_dir = os.path.join(
-                            args.output_dir, "validation_images")
-
-                        if not os.path.exists(val_save_dir):
-                            os.makedirs(val_save_dir)
-
-                        with torch.autocast(
-                            str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
-                        ):
-                            val_images = validation_images
-                            
-                            for val_img_idx in range(args.num_validation_images):
-                                num_frames = args.num_frames
-                                video_frames = pipeline(
-                                    load_image(val_images[val_img_idx]).resize((args.width, args.height)),
-                                    height=args.height,
-                                    width=args.width,
-                                    num_frames=num_frames,
-                                    decode_chunk_size=8,
-                                    motion_bucket_id=127,
-                                    fps=7,
-                                    noise_aug_strength=0.02,
-                                    # generator=generator,
-                                ).frames[0]
-                                print("Uploading validation images")
-                                out_file = os.path.join(
-                                    val_save_dir,
-                                    f"step_{global_step}_val_img_{val_img_idx}.mp4",
-                                )
-
-                                for i in range(num_frames):
-                                    img = video_frames[i]
-                                    video_frames[i] = np.array(img)
-                                pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
-                                accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
-                                export_to_gif(video_frames, out_file, 8)
-
-                        if args.use_ema:
-                            # Switch back to the original UNet parameters.
-                            ema_unet.restore(unet.parameters())
-
-                        del pipeline
-                        torch.cuda.empty_cache()
-
-            logs = {"step_loss": loss.detach().item(
-            ), "lr": lr_scheduler.get_last_lr()[0]}
-            progress_bar.set_postfix(**logs)
-
-            if global_step >= args.max_train_steps:
-                break
-
+        del pipeline
+        torch.cuda.empty_cache()
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
