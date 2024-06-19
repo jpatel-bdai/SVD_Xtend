@@ -61,25 +61,18 @@ import json
 import time
 import wandb
 import cv2
+from dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset
+
+from transformers import AutoTokenizer, CLIPTextModelWithProjection
+import metrics
+
+text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
+text_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
 
 logger = get_logger(__name__, log_level="INFO")
-
-import wandb
-from pathlib import Path
-import time
-import glob
-import os
-
-root_dir = Path("/storage/nvme/results")
-Path(root_dir / "wandb").mkdir(exist_ok=True)
-timestr = time.strftime("%Y%m%d-%H%M%S")
-
-# local_rank = os.environ['LOCAL_RANK']
-# if local_rank == 0:
-#     wandb.init(project="avdc_jpatel", dir=root_dir, id=timestr, name=f"svd_finetuned_rtx", resume=False, job_type="training")
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
@@ -134,174 +127,6 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 # noise_d_high = 64
 # sigma_data = 0.5
 
-
-class DummyDataset(Dataset):
-    def __init__(self, num_samples=1000, width=1024, height=576, sample_frames=15):
-        """
-        Args:
-            num_samples (int): Number of samples in the dataset.
-            channels (int): Number of channels, default is 3 for RGB.
-        """
-        self.num_samples = num_samples
-        # Define the path to the folder containing video frames
-        self.rtx_root_dir = '/storage/nfs/jpatel/rtx_dataset_with_language'
-        self.channels = 3
-        self.width = width
-        self.height = height
-        self.sample_frames = sample_frames
-        
-        self._load_video_paths()
-
-    def _load_video_paths(self):
-        root_dir = Path(self.rtx_root_dir)
-        # Mpdified to use only a single dataset
-        self.datasets = [d for d in root_dir.iterdir() if d.is_dir()]
-        print(f"Found {len(self.datasets)} datasets.")
-
-    def calculate_flow_between_frames(self, image1, image2):
-        prvs = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
-        hsv = np.zeros_like(image2)
-        hsv[..., 1] = 255
-        image2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(prvs, image2, None, 0.5, 3, 15, 3, 5, 1.2, 0)
-        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-        magnitude = np.linalg.norm(mag) / (np.prod(mag.shape) / 10000)
-        return magnitude
-
-    def estimate_flow(self, video):
-        magnitudes = []
-        for idx in range(video.shape[0]-1):
-            current_img = video[idx]
-            next_img = video[idx+1]
-            magnitude = self.calculate_flow_between_frames(current_img, next_img)
-            magnitudes.append(magnitude)
-        return magnitudes
-
-    def trim_video_with_flow_threshold(self, video, flow_threshold, num_frames):
-        trimmed_video = []
-        trimmed_video.append(video[0])
-        idx = 0
-        skipped_frames = 0
-        while len(trimmed_video) < num_frames:
-            current_img = video[idx]
-            while idx < (video.shape[0]-2):
-                next_img = video[idx+1]
-                magnitude = self.calculate_flow_between_frames(current_img, next_img)
-                if(magnitude>flow_threshold):
-                    trimmed_video.append(next_img)
-                    idx += 1
-                    break
-                else:
-                    skipped_frames += 1
-                    idx += 1
-            if(idx==(video.shape[0]-2)):
-                break
-                
-        if len(trimmed_video) < num_frames:
-            print(f"Did not find {num_frames} frames, only found {len(trimmed_video)} frames :( !!")
-            return None, -1
-        
-        trimmed_video = np.array(trimmed_video)
-        
-        return trimmed_video, skipped_frames
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        """
-        Args:
-            idx (int): Index of the sample to return.
-
-        Returns:
-            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
-        """
-        # Randomly select a dataset
-        found_episode = False
-        while not found_episode:
-            chosen_dataset = random.choice(self.datasets)
-
-            image_dir = chosen_dataset / "data" / "images"
-            image_key = next(image_dir.iterdir()).name
-            image_dir = image_dir / image_key
-            image_key = "images/" + image_key
-            lang_dir = chosen_dataset / "data" / "language_instruction"
-            video_npz = sorted(image_dir.glob('*.npz'))
-            episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
-
-            # Randomly select an episode from episodes
-            episode = episodes[np.random.randint(episodes.shape[0])]
-
-            # if len(episode) <= self.sample_frames:
-            #     continue
-            # elif len(episode) > self.sample_frames and len(episode) <= (2*self.sample_frames):
-            #     N = len(episode)
-            #     samples = []
-            #     for i in range(self.sample_frames-1):
-            #         samples.append(int(i*(N-1)/(self.sample_frames-1)))
-            #     samples.append(N-1)
-            #     final_video = [episode[i] for i in samples]
-            #     episode = final_video
-            #     found_episode = True
-            # else:
-            #     original_len = len(episode)
-            #     if len(episode) > 250:
-            #         episode = episode[:250]
-            #     magnitudes = self.estimate_flow(episode)
-            #     rem_frames = len(magnitudes) - (2 * self.sample_frames)
-            #     flow_threshold = sorted(magnitudes)[rem_frames]
-            #     episode, skipped_frames = self.trim_video_with_flow_threshold(episode, flow_threshold, self.sample_frames)
-            #     if skipped_frames == -1:
-            #         print("Trimmed video not found!!")
-            #         continue
-            #     else:
-            #         found_episode = True
-            
-            if len(episode)>self.sample_frames:
-                found_episode = True
-            else:
-                print(f"Finding new episode, Length of current episode : {len(episode)}")
-        
-        # folder_path = chosen_dataset
-        # frames = os.listdir(folder_path)
-        # # Sort the frames by name
-        # frames.sort()
-
-        # Ensure the selected folder has at least `sample_frames`` frames
-        # if len(frames) < self.sample_frames:
-        #     raise ValueError(
-        #         f"The selected folder '{chosen_folder}' contains fewer than `{self.sample_frames}` frames.")
-
-        # Randomly select a start index for frame sequence
-        # start_idx = random.randint(0, len(frames) - self.sample_frames)
-        # start_idx = 0
-        # selected_frames = frames[start_idx:start_idx + self.sample_frames]
-
-        # Initialize a tensor to store the pixel values
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
-
-        # Load and process each frame
-        for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
-            # Resize the image and convert it to a tensor
-            img_resized = cv2.resize(frame, (self.width, self.height))
-            
-            # img_resized = np.resize(frame, (self.height, self.width, 3))
-            img_tensor = torch.from_numpy(img_resized).float()
-            
-            # Normalize the image by scaling pixel values to [-1, 1]
-            img_normalized = img_tensor / 127.5 - 1
-
-            # Rearrange channels if necessary
-            if self.channels == 3:
-                img_normalized = img_normalized.permute(
-                    2, 0, 1)  # For RGB images
-            elif self.channels == 1:
-                img_normalized = img_normalized.mean(
-                    dim=2, keepdim=True)  # For grayscale images
-
-            pixel_values[i] = img_normalized
-        return {'pixel_values': pixel_values}
 
 # resizing utils
 # TODO: clean up later
@@ -516,7 +341,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs_test",
+        default="/storage/nfs/jpatel/svd_checkpoints/bdai_datasets_ckpt/",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -754,10 +579,15 @@ def download_image(url):
 
 
 validation_images = []
+validation_images_pil = []
+val_texts = []
+gt_videos = []
 def save_validation_images(train_dataloader, accelerator, num_validaton_images):
     saved_imgs = 0
+    print("Uploading groud truth images")
     for step, batch in enumerate(train_dataloader):
         if saved_imgs > num_validaton_images: break
+        print(f"Uploading groud truth images {saved_imgs}")
         img_tensor = batch['pixel_values'][0][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (img_tensor + 1) / 2
@@ -767,23 +597,22 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
 
         # Convert the NumPy array to a PIL Image
         image = Image.fromarray(array)
-        image_path = f'save_flow_img_{saved_imgs}.png'
-        validation_images.append(image_path)
-        # Save the image
-        image.save(image_path)
-        
+        validation_images_pil.append(image)
         video_tensor = batch['pixel_values'][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (video_tensor + 1) / 2
-
+        gt_videos.append(normalized_tensor)
+        
         # Convert the normalized tensor to the range [0, 255]
         array = (normalized_tensor * 255).byte().numpy()
-        accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
+        val_texts.append(batch['task_text'][0])
+        print(f"normalized_tensor : {normalized_tensor.shape}")
+        # accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
+        accelerator.log({f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
         saved_imgs += 1
 
 def main():
     args = parse_args()
-
     if args.non_ema_revision is not None:
         deprecate(
             "non_ema_revision!=None",
@@ -805,10 +634,14 @@ def main():
         # kwargs_handlers=[ddp_kwargs]
     )
     
+    root_dir = Path("/storage/nvme/results")
+    Path(root_dir / "wandb").mkdir(exist_ok=True)
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    
     accelerator.init_trackers(
         project_name="avdc_jpatel",
         # config={"dropout": 0.1, "learning_rate": 1e-2}
-        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_finetuned_rtx_flow"}}
+        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_finetuned_bdai_datasets"}}
     )
 
     generator = torch.Generator(
@@ -1008,8 +841,7 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
-    # breakpoint()
+    train_dataset = BDAIDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -1020,8 +852,6 @@ def main():
 
     save_validation_images(train_dataloader, accelerator, args.num_validation_images)
     
-    # print(next)
-
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
@@ -1242,6 +1072,8 @@ def main():
                     # Final image conditioning.
                     conditional_latents = image_mask * conditional_latents
 
+                # conditional_latents_3 = conditional_latents[:,2,:].unsqueeze(1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
+                # conditional_latents = conditional_latents_1 + conditional_latents_2 + conditional_latents_3
                 # Concatenate the `conditional_latents` with the `noisy_latents`.
                 conditional_latents = conditional_latents.unsqueeze(
                     1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
@@ -1358,11 +1190,14 @@ def main():
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
                             val_images = validation_images
-                            
+                            test_ssim = []
+                            test_lpips = []
+                            test_psnr = []
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    load_image(val_images[val_img_idx]).resize((args.width, args.height)),
+                                    # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
+                                    validation_images_pil[val_img_idx].resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
@@ -1382,8 +1217,40 @@ def main():
                                     img = video_frames[i]
                                     video_frames[i] = np.array(img)
                                 pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
-                                accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
+                                # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
+
+                                # accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
+
+                                # Compute only over the generated part
+                                gtt = gt_videos[val_img_idx].unsqueeze(0).to(pipeline.device)[:,1:,:]
+                                predt = torch.from_numpy(pred_video/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
+                                predt = predt.to(gtt.dtype)
+                                print(f"pred_video : {pred_video.shape}")
+                                # Compute metrics
+                                fvd = metrics.FVD(device=pipeline.device)
+                                ssim = metrics.get_ssim()
+                                psnr = metrics.get_psnr()
+                                lpips = metrics.get_lpips(device=pipeline.device)
+                                test_ssim_val = ssim(predt, gtt)[0]
+                                test_lpips_val = lpips(predt, gtt)[0]
+                                test_psnr_val = psnr(predt, gtt)[0]
+                                test_ssim.append(test_ssim_val)
+                                test_lpips.append(test_lpips_val)
+                                test_psnr.append(test_psnr_val)
+                                
+                                metrics_str = f"ssim_{test_ssim_val:.2f}_psnr_{test_psnr_val:.2f}_lpips_{test_lpips_val:.2f}"
+                                
+                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_{metrics_str}_{global_step}": wandb.Video(pred_video, fps=4)}, step=global_step)
+                                # accelerator.log({f"step_val_img_{val_img_idx}/pred_{metrics_str}": wandb.Video(pred_video, fps=4)}, step=global_step)
+        
                                 export_to_gif(video_frames, out_file, 8)
+                            test_ssim = torch.mean(torch.stack(test_ssim))
+                            test_lpips = torch.mean(torch.stack(test_lpips))
+                            test_psnr = torch.mean(torch.stack(test_psnr))
+                            accelerator.log({f"test_ssim": test_ssim,
+                                                f"test_lpips": test_lpips,
+                                                f"test_psnr": test_psnr,
+                                                }, step=global_step)
 
                         if args.use_ema:
                             # Switch back to the original UNet parameters.

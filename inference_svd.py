@@ -53,7 +53,8 @@ from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, load_image
 from diffusers.utils.import_utils import is_xformers_available
 
-from torch.utils.data import Dataset
+from dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset
+import metrics
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
@@ -69,10 +70,6 @@ import os
 root_dir = Path("/storage/nvme/results")
 Path(root_dir / "wandb").mkdir(exist_ok=True)
 timestr = time.strftime("%Y%m%d-%H%M%S")
-
-# local_rank = os.environ['LOCAL_RANK']
-# if local_rank == 0:
-#     wandb.init(project="avdc_jpatel", dir=root_dir, id=timestr, name=f"svd_finetuned_rtx", resume=False, job_type="training")
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
@@ -126,105 +123,6 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 # noise_d_low = 32
 # noise_d_high = 64
 # sigma_data = 0.5
-
-
-class DummyDataset(Dataset):
-    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=15):
-        """
-        Args:
-            num_samples (int): Number of samples in the dataset.
-            channels (int): Number of channels, default is 3 for RGB.
-        """
-        self.num_samples = num_samples
-        # Define the path to the folder containing video frames
-        self.rtx_root_dir = '/storage/nfs/jpatel/rtx_dataset_with_language'
-        # self.datasets = os.listdir(self.base_folder) 
-        # self.folders = os.listdir(self.base_folder)
-        self.channels = 3
-        self.width = width
-        self.height = height
-        self.sample_frames = sample_frames
-        
-        self._load_video_paths()
-
-    def _load_video_paths(self):
-        root_dir = Path(self.rtx_root_dir)
-        # Mpdified to use only a single dataset
-        self.datasets = [d for d in root_dir.iterdir() if (d.is_dir() and "bridge" in str(d))]
-        print(f"Found {len(self.datasets)} datasets.")
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        """
-        Args:
-            idx (int): Index of the sample to return.
-
-        Returns:
-            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
-        """
-        # Randomly select a dataset
-        found_episode = False
-        while not found_episode:
-            chosen_dataset = random.choice(self.datasets)
-
-            image_dir = chosen_dataset / "data" / "images"
-            image_key = next(image_dir.iterdir()).name
-            image_dir = image_dir / image_key
-            image_key = "images/" + image_key
-            lang_dir = chosen_dataset / "data" / "language_instruction"
-            video_npz = sorted(image_dir.glob('*.npz'))
-            episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
-
-            # Randomly select an episode from episodes
-            episode = episodes[np.random.randint(episodes.shape[0])]
-
-            if len(episode)>self.sample_frames:
-                found_episode = True
-            else:
-                print(f"Finding new episode, Length of current episode : {len(episode)}")
-        # breakpoint()
-        # folder_path = chosen_dataset
-        # frames = os.listdir(folder_path)
-        # # Sort the frames by name
-        # frames.sort()
-
-        # Ensure the selected folder has at least `sample_frames`` frames
-        # if len(frames) < self.sample_frames:
-        #     raise ValueError(
-        #         f"The selected folder '{chosen_folder}' contains fewer than `{self.sample_frames}` frames.")
-
-        # Randomly select a start index for frame sequence
-        # start_idx = random.randint(0, len(frames) - self.sample_frames)
-        # start_idx = 0
-        # selected_frames = frames[start_idx:start_idx + self.sample_frames]
-
-        # Initialize a tensor to store the pixel values
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
-
-        # Load and process each frame
-        for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
-            # Resize the image and convert it to a tensor
-            img_resized = cv2.resize(frame, (self.width, self.height))
-            
-            # img_resized = np.resize(frame, (self.height, self.width, 3))
-            img_tensor = torch.from_numpy(img_resized).float()
-            
-            # Normalize the image by scaling pixel values to [-1, 1]
-            img_normalized = img_tensor / 127.5 - 1
-
-            # Rearrange channels if necessary
-            if self.channels == 3:
-                img_normalized = img_normalized.permute(
-                    2, 0, 1)  # For RGB images
-            elif self.channels == 1:
-                img_normalized = img_normalized.mean(
-                    dim=2, keepdim=True)  # For grayscale images
-
-            pixel_values[i] = img_normalized
-        return {'pixel_values': pixel_values}
 
 # resizing utils
 # TODO: clean up later
@@ -409,7 +307,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=15,
+        default=25,
     )
     parser.add_argument(
         "--width",
@@ -424,7 +322,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=20,
+        default=5,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -439,7 +337,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs",
+        default="/storage/nfs/jpatel/svd_checkpoints/bridge_v2_ckpt/bridge_v2_ckpt",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -678,6 +576,7 @@ def download_image(url):
 
 validation_images = []
 validation_images_pil = []
+gt_videos = []
 def save_validation_images(train_dataloader, accelerator, num_validaton_images):
     saved_imgs = 0
     for step, batch in enumerate(train_dataloader):
@@ -691,19 +590,13 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
 
         # Convert the NumPy array to a PIL Image
         image = Image.fromarray(array)
-        
-        # Not saving the image instead keeping it in memory
-        # image_path = f'save_img_{saved_imgs}.png'
-        # validation_images.append(image_path)
-        # # Save the image
-        # image.save(image_path)
 
         validation_images_pil.append(image)
         
         video_tensor = batch['pixel_values'][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (video_tensor + 1) / 2
-
+        gt_videos.append(normalized_tensor)
         # Convert the normalized tensor to the range [0, 255]
         array = (normalized_tensor * 255).byte().numpy()
         accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
@@ -928,8 +821,7 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
-    # breakpoint()
+    train_dataset = BDAIDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -1071,7 +963,7 @@ def main():
     progress_bar = tqdm(range(global_step, args.max_train_steps),
                         disable=not accelerator.is_local_main_process)
     progress_bar.set_description("Steps")
-    breakpoint()
+
     if (
         (global_step % args.validation_steps == 0)
         or (global_step == 1)
@@ -1133,7 +1025,25 @@ def main():
                     img = video_frames[i]
                     video_frames[i] = np.array(img)
                 pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
-                accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
+
+                # Compute only over the generated part
+                gtt = gt_videos[val_img_idx].unsqueeze(0).to(pipeline.device)[:,1:,:]
+                predt = torch.from_numpy(pred_video/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
+                predt = predt.to(gtt.dtype)
+                print(f"pred_video : {pred_video.shape}")
+                
+                # Compute metrics
+                fvd = metrics.FVD(device=pipeline.device)
+                ssim = metrics.get_ssim()
+                psnr = metrics.get_psnr()
+                lpips = metrics.get_lpips(device=pipeline.device)
+                
+                test_ssim = ssim(predt, gtt)[0]
+                test_lpips = lpips(predt, gtt)[0]
+                test_psnr = psnr(predt, gtt)[0]
+                metrics_str = f"ssim_{test_ssim:.2f}_psnr_{test_psnr:.2f}_lpips_{test_lpips:.2f}"
+                
+                accelerator.log({f"step_val_img_{val_img_idx}/pred_{metrics_str}": wandb.Video(pred_video, fps=4)}, step=global_step)
                 export_to_gif(video_frames, out_file, 8)
 
         if args.use_ema:
@@ -1144,27 +1054,6 @@ def main():
         torch.cuda.empty_cache()
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        unet = accelerator.unwrap_model(unet)
-        if args.use_ema:
-            ema_unet.copy_to(unet.parameters())
-
-        pipeline = StableVideoDiffusionPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            image_encoder=accelerator.unwrap_model(image_encoder),
-            vae=accelerator.unwrap_model(vae),
-            unet=unet,
-            revision=args.revision,
-        )
-        pipeline.save_pretrained(args.output_dir)
-
-        if args.push_to_hub:
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
     accelerator.end_training()
 
 
