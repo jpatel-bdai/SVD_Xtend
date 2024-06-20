@@ -195,15 +195,24 @@ class BDAIDataset(Dataset):
         self.tasks = []
         self.sample_per_seq = sample_frames
         obss, tasks = [], []
+        val_obss, val_tasks = [], []
         for seq_dir in tqdm(sequence_dirs[:len(sequence_dirs)//2]):
             obs, task = self.extract_seq(seq_dir)
-            tasks.extend(task)
-            obss.extend(obs)
+            if 'val' in seq_dir:
+                val_tasks.extend(task)
+                val_obss.extend(obs)
+            else:
+                tasks.extend(task)
+                obss.extend(obs)
             
         self.sequences = obss
         self.tasks = tasks
-        self.num_samples = len(self.sequences)
+        self.val_sequences = val_obss
+        self.val_tasks = val_tasks
+        self.num_samples = len(self.sequences) + len(self.val_sequences)
+        self.sample_validation = False
         print("training_samples: ", len(self.sequences))
+        print("validation_samples: ", len(self.val_sequences))
         print("Done")
         
     def __len__(self):
@@ -249,8 +258,15 @@ class BDAIDataset(Dataset):
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         """
         # Randomly select a dataset
-        samples = self.sequences[idx]
-        task = self.tasks[idx]
+        if self.sample_validation:
+            idx = random.randrange(0,len(self.val_sequences))
+            samples = self.val_sequences[idx]
+            task = self.val_tasks[idx]
+        else:
+            idx = random.randrange(0,len(self.sequences))
+            samples = self.sequences[idx]
+            task = self.tasks[idx]
+
         episode = [s for s in samples]
         
         pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
@@ -281,7 +297,7 @@ class BDAIDataset(Dataset):
 
 
 class BDAIZoomInOutDataset(Dataset):
-    def __init__(self, num_samples=336, width=1024, height=576, sample_frames=25):
+    def __init__(self, num_samples=10, width=1024, height=576, sample_frames=25):
         """
         Args:
             num_samples (int): Number of samples in the dataset.

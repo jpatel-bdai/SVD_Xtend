@@ -311,7 +311,7 @@ def parse_args():
     parser.add_argument(
         "--num_frames",
         type=int,
-        default=25,
+        default=10,
     )
     parser.add_argument(
         "--width",
@@ -326,7 +326,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=10,
+        default=2,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -341,7 +341,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/storage/nfs/jpatel/svd_checkpoints/bdai_datasets_val_ckpt/",
+        default="./output_test",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -606,6 +606,7 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
         # Convert the normalized tensor to the range [0, 255]
         array = (normalized_tensor * 255).byte().numpy()
         val_texts.append(batch['task_text'][0])
+        print(f"normalized_tensor : {normalized_tensor.shape}")
         # accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
         accelerator.log({f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
         saved_imgs += 1
@@ -656,7 +657,7 @@ def main():
     accelerator.init_trackers(
         project_name="avdc_jpatel",
         # config={"dropout": 0.1, "learning_rate": 1e-2}
-        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_finetuned_bdai_datasets"}}
+        init_kwargs={"wandb": {"dir": root_dir, "mode": "disabled", "id" : timestr, "name" : "svd_finetuned_bdai_datasets"}}
     )
 
     generator = torch.Generator(
@@ -856,7 +857,7 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = BDAIDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_dataset = BDAIZoomInOutDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -864,9 +865,8 @@ def main():
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
-    train_dataloader.dataset.sample_validation = True
+
     save_validation_images(train_dataloader, accelerator, args.num_validation_images)
-    train_dataloader.dataset.sample_validation = False
     
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1014,14 +1014,18 @@ def main():
                     accelerator.device, non_blocking=True
                 )
                 # save_img_from_tensor(pixel_values[:, 0:1, :, :, :].squeeze(0).squeeze(0).cpu(), "first_frame")
-                
-                conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
-
+                # breakpoint()
+                # Random
+                # Adding three frame conditioning
+                conditional_pixel_values = pixel_values[:, 0:3, :, :, :]
+                # conditional_pixel_values = 2 * torch.rand(1, 1, 3, 320, 512).to(pixel_values.device) - 1
+                # conditional_pixel_values = conditional_pixel_values.to(pixel_values.dtype)
                 latents = tensor_to_vae_latent(pixel_values, vae)
+                # breakpoint()
                 # single_latent = latents[:, 0:1, 0:1, :, :]
                 # save_img_from_tensor(latents[:, 0:1, 0:1, :, :].squeeze(0).squeeze(0).repeat(3,1,1).cpu(), "latents")
                 
-                # save_img_from_tensor(conditional_pixel_values[0,0], "img0")
+                save_img_from_tensor(conditional_pixel_values[0,0], "img0")
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
@@ -1032,8 +1036,10 @@ def main():
                 conditional_pixel_values = \
                     torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
                 # save_img_from_tensor(conditional_pixel_values.squeeze(0).squeeze(0).cpu(), 'noised_pixels')
-                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
+                # Adding three frame conditioning
+                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0:3, :, :, :]
                 # save_img_from_tensor(conditional_latents.squeeze(0).cpu(), 'conditional_latents')
+                conditional_latents = torch.sum(conditional_latents, axis=1)/3
                 
                 conditional_latents = conditional_latents / vae.config.scaling_factor
 

@@ -54,20 +54,6 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available, lo
 from diffusers.utils.import_utils import is_xformers_available
 
 from torch.utils.data import Dataset
-import numpy as np
-import os
-from pathlib import Path
-import json
-import time
-import wandb
-import cv2
-from dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset
-
-from transformers import AutoTokenizer, CLIPTextModelWithProjection
-import metrics
-
-text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
-text_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
@@ -127,6 +113,74 @@ def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
 # noise_d_high = 64
 # sigma_data = 0.5
 
+
+class DummyDataset(Dataset):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25):
+        """
+        Args:
+            num_samples (int): Number of samples in the dataset.
+            channels (int): Number of channels, default is 3 for RGB.
+        """
+        self.num_samples = num_samples
+        # Define the path to the folder containing video frames
+        self.base_folder = 'bdd100k/images/track/mini'
+        self.folders = os.listdir(self.base_folder)
+        self.channels = 3
+        self.width = width
+        self.height = height
+        self.sample_frames = sample_frames
+
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to return.
+
+        Returns:
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
+        """
+        # Randomly select a folder (representing a video) from the base folder
+        chosen_folder = random.choice(self.folders)
+        folder_path = os.path.join(self.base_folder, chosen_folder)
+        frames = os.listdir(folder_path)
+        # Sort the frames by name
+        frames.sort()
+
+        # Ensure the selected folder has at least `sample_frames`` frames
+        if len(frames) < self.sample_frames:
+            raise ValueError(
+                f"The selected folder '{chosen_folder}' contains fewer than `{self.sample_frames}` frames.")
+
+        # Randomly select a start index for frame sequence
+        start_idx = random.randint(0, len(frames) - self.sample_frames)
+        selected_frames = frames[start_idx:start_idx + self.sample_frames]
+
+        # Initialize a tensor to store the pixel values
+        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+
+        # Load and process each frame
+        for i, frame_name in enumerate(selected_frames):
+            frame_path = os.path.join(folder_path, frame_name)
+            with Image.open(frame_path) as img:
+                # Resize the image and convert it to a tensor
+                img_resized = img.resize((self.width, self.height))
+                img_tensor = torch.from_numpy(np.array(img_resized)).float()
+
+                # Normalize the image by scaling pixel values to [-1, 1]
+                img_normalized = img_tensor / 127.5 - 1
+
+                # Rearrange channels if necessary
+                if self.channels == 3:
+                    img_normalized = img_normalized.permute(
+                        2, 0, 1)  # For RGB images
+                elif self.channels == 1:
+                    img_normalized = img_normalized.mean(
+                        dim=2, keepdim=True)  # For grayscale images
+
+                pixel_values[i] = img_normalized
+        return {'pixel_values': pixel_values}
 
 # resizing utils
 # TODO: clean up later
@@ -326,7 +380,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=10,
+        default=1,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -341,7 +395,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/storage/nfs/jpatel/svd_checkpoints/bdai_datasets_val_ckpt/",
+        default="./outputs",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -502,7 +556,7 @@ def parse_args():
     parser.add_argument(
         "--report_to",
         type=str,
-        default="wandb",
+        default="tensorboard",
         help=(
             'The integration to report the results and logs to. Supported platforms are `"tensorboard"`'
             ' (default), `"wandb"` and `"comet_ml"`. Use `"all"` to report to all integrations.'
@@ -578,56 +632,9 @@ def download_image(url):
     return original_image
 
 
-validation_images = []
-validation_images_pil = []
-val_texts = []
-gt_videos = []
-def save_validation_images(train_dataloader, accelerator, num_validaton_images):
-    saved_imgs = 0
-    print("Uploading groud truth images")
-    for step, batch in enumerate(train_dataloader):
-        if saved_imgs > (num_validaton_images - 1): break
-        print(f"Uploading groud truth images {saved_imgs}")
-        img_tensor = batch['pixel_values'][0][0]
-        # Normalize the tensor values from [-1, 1] to [0, 1]
-        normalized_tensor = (img_tensor + 1) / 2
-
-        # Convert the normalized tensor to the range [0, 255]
-        array = (normalized_tensor * 255).permute(1, 2, 0).byte().numpy()
-
-        # Convert the NumPy array to a PIL Image
-        image = Image.fromarray(array)
-        validation_images_pil.append(image)
-        video_tensor = batch['pixel_values'][0]
-        # Normalize the tensor values from [-1, 1] to [0, 1]
-        normalized_tensor = (video_tensor + 1) / 2
-        gt_videos.append(normalized_tensor)
-        
-        # Convert the normalized tensor to the range [0, 255]
-        array = (normalized_tensor * 255).byte().numpy()
-        val_texts.append(batch['task_text'][0])
-        # accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
-        accelerator.log({f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
-        saved_imgs += 1
-
-def save_img_from_tensor(normalized_tensor, image_name):
-    # Normalize the tensor to the range [0, 255]
-    normalized_tensor = (normalized_tensor + 1) * 127.5
-    normalized_tensor = normalized_tensor.clamp(0, 255)  # Ensure values are within [0, 255]
-
-    # Convert to uint8
-    image_tensor = normalized_tensor.byte()
-
-    # Convert PyTorch tensor to NumPy array
-    image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # (320, 512, 3)
-
-    image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-    
-    # Save the image using cv2
-    cv2.imwrite(f'{image_name}.png', image_np)
-
 def main():
     args = parse_args()
+
     if args.non_ema_revision is not None:
         deprecate(
             "non_ema_revision!=None",
@@ -647,16 +654,6 @@ def main():
         log_with=args.report_to,
         project_config=accelerator_project_config,
         # kwargs_handlers=[ddp_kwargs]
-    )
-    
-    root_dir = Path("/storage/nvme/results")
-    Path(root_dir / "wandb").mkdir(exist_ok=True)
-    timestr = time.strftime("%Y%m%d-%H%M%S")
-    
-    accelerator.init_trackers(
-        project_name="avdc_jpatel",
-        # config={"dropout": 0.1, "learning_rate": 1e-2}
-        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_finetuned_bdai_datasets"}}
     )
 
     generator = torch.Generator(
@@ -856,7 +853,7 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = BDAIDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_dataset = DummyDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -864,10 +861,7 @@ def main():
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
-    train_dataloader.dataset.sample_validation = True
-    save_validation_images(train_dataloader, accelerator, args.num_validation_images)
-    train_dataloader.dataset.sample_validation = False
-    
+
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
@@ -952,9 +946,9 @@ def main():
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
-        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
+        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
             len(add_time_ids)
-        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
+        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
@@ -999,7 +993,6 @@ def main():
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
-        print("Starting to train")
         for step, batch in enumerate(train_dataloader):
             # Skip steps until we reach the resumed step
             if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
@@ -1009,19 +1002,13 @@ def main():
 
             with accelerator.accumulate(unet):
                 # first, convert images to latent space.
-                
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
-                # save_img_from_tensor(pixel_values[:, 0:1, :, :, :].squeeze(0).squeeze(0).cpu(), "first_frame")
-                
                 conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
-                # single_latent = latents[:, 0:1, 0:1, :, :]
-                # save_img_from_tensor(latents[:, 0:1, 0:1, :, :].squeeze(0).squeeze(0).repeat(3,1,1).cpu(), "latents")
-                
-                # save_img_from_tensor(conditional_pixel_values[0,0], "img0")
+
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
@@ -1031,10 +1018,7 @@ def main():
                 cond_sigmas = cond_sigmas[:, None, None, None, None]
                 conditional_pixel_values = \
                     torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
-                # save_img_from_tensor(conditional_pixel_values.squeeze(0).squeeze(0).cpu(), 'noised_pixels')
                 conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
-                # save_img_from_tensor(conditional_latents.squeeze(0).cpu(), 'conditional_latents')
-                
                 conditional_latents = conditional_latents / vae.config.scaling_factor
 
                 # Sample a random timestep for each image
@@ -1088,8 +1072,6 @@ def main():
                     # Final image conditioning.
                     conditional_latents = image_mask * conditional_latents
 
-                # conditional_latents_3 = conditional_latents[:,2,:].unsqueeze(1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
-                # conditional_latents = conditional_latents_1 + conditional_latents_2 + conditional_latents_3
                 # Concatenate the `conditional_latents` with the `noisy_latents`.
                 conditional_latents = conditional_latents.unsqueeze(
                     1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
@@ -1205,25 +1187,20 @@ def main():
                         with torch.autocast(
                             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
                         ):
-                            val_images = validation_images
-                            test_ssim = []
-                            test_lpips = []
-                            test_psnr = []
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
                                 video_frames = pipeline(
-                                    # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
-                                    validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                                    load_image('demo.jpg').resize((args.width, args.height)),
                                     height=args.height,
                                     width=args.width,
                                     num_frames=num_frames,
-                                    decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
+                                    decode_chunk_size=8,
                                     motion_bucket_id=127,
                                     fps=7,
                                     noise_aug_strength=0.02,
                                     # generator=generator,
                                 ).frames[0]
-                                print("Uploading validation images")
+
                                 out_file = os.path.join(
                                     val_save_dir,
                                     f"step_{global_step}_val_img_{val_img_idx}.mp4",
@@ -1232,41 +1209,7 @@ def main():
                                 for i in range(num_frames):
                                     img = video_frames[i]
                                     video_frames[i] = np.array(img)
-                                pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
-                                # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
-
-                                # accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
-
-                                # Compute only over the generated part
-                                gtt = gt_videos[val_img_idx].unsqueeze(0).to(pipeline.device)[:,1:,:]
-                                predt = torch.from_numpy(pred_video/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
-                                predt = predt.to(gtt.dtype)
-                                print(f"pred_video : {pred_video.shape}")
-                                # Compute metrics
-                                fvd = metrics.FVD(device=pipeline.device)
-                                ssim = metrics.get_ssim()
-                                psnr = metrics.get_psnr()
-                                lpips = metrics.get_lpips(device=pipeline.device)
-                                test_ssim_val = ssim(predt, gtt)[0]
-                                test_lpips_val = lpips(predt, gtt)[0]
-                                test_psnr_val = psnr(predt, gtt)[0]
-                                test_ssim.append(test_ssim_val)
-                                test_lpips.append(test_lpips_val)
-                                test_psnr.append(test_psnr_val)
-                                
-                                metrics_str = f"ssim_{test_ssim_val:.2f}_psnr_{test_psnr_val:.2f}_lpips_{test_lpips_val:.2f}"
-                                
-                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_{metrics_str}_{global_step}": wandb.Video(pred_video, fps=4)}, step=global_step)
-                                # accelerator.log({f"step_val_img_{val_img_idx}/pred_{metrics_str}": wandb.Video(pred_video, fps=4)}, step=global_step)
-        
                                 export_to_gif(video_frames, out_file, 8)
-                            test_ssim = torch.mean(torch.stack(test_ssim))
-                            test_lpips = torch.mean(torch.stack(test_lpips))
-                            test_psnr = torch.mean(torch.stack(test_psnr))
-                            accelerator.log({f"test_ssim": test_ssim,
-                                                f"test_lpips": test_lpips,
-                                                f"test_psnr": test_psnr,
-                                                }, step=global_step)
 
                         if args.use_ema:
                             # Switch back to the original UNet parameters.
