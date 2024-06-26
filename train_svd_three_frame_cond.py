@@ -61,7 +61,7 @@ import json
 import time
 import wandb
 import cv2
-from dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset
+from dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset, ShapeDataset
 
 from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import metrics
@@ -326,7 +326,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=2,
+        default=3,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -401,7 +401,7 @@ def parse_args():
     parser.add_argument(
         "--conditioning_dropout_prob",
         type=float,
-        default=0.1,
+        default=0.1, # originally 0.1
         help="Conditioning dropout probability. Drops out the conditionings (image and edit prompt) used in training InstructPix2Pix. See section 3.2.1 in the paper: https://arxiv.org/abs/2211.09800.",
     )
     parser.add_argument(
@@ -587,28 +587,31 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
     print("Uploading groud truth images")
     for step, batch in enumerate(train_dataloader):
         if saved_imgs > (num_validaton_images - 1): break
+        images = []
         print(f"Uploading groud truth images {saved_imgs}")
-        img_tensor = batch['pixel_values'][0][0]
-        # Normalize the tensor values from [-1, 1] to [0, 1]
-        normalized_tensor = (img_tensor + 1) / 2
+        for i in range(1):
+            img_tensor = batch['pixel_values'][0][0]
+            # Normalize the tensor values from [-1, 1] to [0, 1]
+            normalized_tensor = (img_tensor + 1) / 2
 
-        # Convert the normalized tensor to the range [0, 255]
-        array = (normalized_tensor * 255).permute(1, 2, 0).byte().numpy()
+            # Convert the normalized tensor to the range [0, 255]
+            array = (normalized_tensor * 255).permute(1, 2, 0).byte().numpy()
 
-        # Convert the NumPy array to a PIL Image
-        image = Image.fromarray(array)
-        validation_images_pil.append(image)
-        video_tensor = batch['pixel_values'][0]
-        # Normalize the tensor values from [-1, 1] to [0, 1]
-        normalized_tensor = (video_tensor + 1) / 2
-        gt_videos.append(normalized_tensor)
-        
-        # Convert the normalized tensor to the range [0, 255]
-        array = (normalized_tensor * 255).byte().numpy()
+            # Convert the NumPy array to a PIL Image
+            image = Image.fromarray(array)
+            images.append(image)
+            video_tensor = batch['pixel_values'][0]
+            # Normalize the tensor values from [-1, 1] to [0, 1]
+            normalized_tensor = (video_tensor + 1) / 2
+            if i==0:
+                gt_videos.append(normalized_tensor)
+                # Convert the normalized tensor to the range [0, 255]
+                video_array = (normalized_tensor * 255).byte().numpy()
+        validation_images_pil.append(images[0])
         val_texts.append(batch['task_text'][0])
-        print(f"normalized_tensor : {normalized_tensor.shape}")
+        
         # accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
-        accelerator.log({f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
+        accelerator.log({f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(video_array, fps=4)},step=0)
         saved_imgs += 1
 
 def save_img_from_tensor(normalized_tensor, image_name):
@@ -657,7 +660,7 @@ def main():
     accelerator.init_trackers(
         project_name="avdc_jpatel",
         # config={"dropout": 0.1, "learning_rate": 1e-2}
-        init_kwargs={"wandb": {"dir": root_dir, "mode": "disabled", "id" : timestr, "name" : "svd_finetuned_bdai_datasets"}}
+        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_trial"}}
     )
 
     generator = torch.Generator(
@@ -714,6 +717,8 @@ def main():
         low_cpu_mem_usage=True,
         variant="fp16",
     )
+    import clip
+    clip_model, clip_preprocess = clip.load("ViT-B/32")
 
     # Freeze vae and image_encoder
     vae.requires_grad_(False)
@@ -819,7 +824,6 @@ def main():
     parameters_list = []
 
     # Customize the parameters that need to be trained; if necessary, you can uncomment them yourself.
-
     for name, para in unet.named_parameters():
         if 'temporal_transformer_block' in name:
             parameters_list.append(para)
@@ -857,11 +861,11 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_dataset = BDAIZoomInOutDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_dataset = ShapeDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        sampler=sampler,
+        # sampler=sampler,
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
@@ -999,7 +1003,7 @@ def main():
     for epoch in range(first_epoch, args.num_train_epochs):
         unet.train()
         train_loss = 0.0
-        print("Starting to train")
+        # print("Starting to train")
         for step, batch in enumerate(train_dataloader):
             # Skip steps until we reach the resumed step
             if args.resume_from_checkpoint and epoch == first_epoch and step < resume_step:
@@ -1014,14 +1018,12 @@ def main():
                     accelerator.device, non_blocking=True
                 )
                 # save_img_from_tensor(pixel_values[:, 0:1, :, :, :].squeeze(0).squeeze(0).cpu(), "first_frame")
-                # breakpoint()
                 # Random
                 # Adding three frame conditioning
                 conditional_pixel_values = pixel_values[:, 0:3, :, :, :]
                 # conditional_pixel_values = 2 * torch.rand(1, 1, 3, 320, 512).to(pixel_values.device) - 1
                 # conditional_pixel_values = conditional_pixel_values.to(pixel_values.dtype)
                 latents = tensor_to_vae_latent(pixel_values, vae)
-                # breakpoint()
                 # single_latent = latents[:, 0:1, 0:1, :, :]
                 # save_img_from_tensor(latents[:, 0:1, 0:1, :, :].squeeze(0).squeeze(0).repeat(3,1,1).cpu(), "latents")
                 
@@ -1037,9 +1039,9 @@ def main():
                     torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
                 # save_img_from_tensor(conditional_pixel_values.squeeze(0).squeeze(0).cpu(), 'noised_pixels')
                 # Adding three frame conditioning
-                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0:3, :, :, :]
+                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
                 # save_img_from_tensor(conditional_latents.squeeze(0).cpu(), 'conditional_latents')
-                conditional_latents = torch.sum(conditional_latents, axis=1)/3
+                # conditional_latents = torch.sum(conditional_latents, axis=1)/3
                 
                 conditional_latents = conditional_latents / vae.config.scaling_factor
 
@@ -1058,7 +1060,7 @@ def main():
                 # Get the text embedding for conditioning.
                 encoder_hidden_states = encode_image(
                     pixel_values[:, 0, :, :, :].float())
-
+                
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
                 # so I adopted this approach. The same applies to the 'fps' (frames per second).
@@ -1071,18 +1073,34 @@ def main():
                 )
                 added_time_ids = added_time_ids.to(latents.device)
 
+                # Text conditioning
+                text = clip.tokenize(batch['task_text']).to("cuda")
+                with torch.no_grad():
+                    text_features = clip_model.encode_text(text)
+                text_features_1024 = torch.cat((text_features, text_features), dim=-1)
+                
+                # Explicit task conditioning
+                # breakpoint()
+                half_value = text_features_1024.shape[1]//2
+                if batch['task_text'][0]=="move the red square to blue circle.":
+                    text_features_1024 = torch.zeros_like(text_features_1024)
+                    text_features_1024[0][:half_value] = 1.0
+                elif batch['task_text'][0]=="move the red square to green triangle.":
+                    text_features_1024 = torch.zeros_like(text_features_1024)
+                    text_features_1024[0][half_value:] = 1.0
+
                 # Conditioning dropout to support classifier-free guidance during inference. For more details
                 # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
                 if args.conditioning_dropout_prob is not None:
-                    random_p = torch.rand(
-                        bsz, device=latents.device, generator=generator)
+                    random_p = torch.rand(bsz, device=latents.device, generator=generator)
                     # Sample masks for the edit prompts.
                     prompt_mask = random_p < 2 * args.conditioning_dropout_prob
                     prompt_mask = prompt_mask.reshape(bsz, 1, 1)
                     # Final text conditioning.
                     null_conditioning = torch.zeros_like(encoder_hidden_states)
+                    prompt_mask = torch.ones_like(prompt_mask)
                     encoder_hidden_states = torch.where(
-                        prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
+                        prompt_mask, text_features_1024.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
                     # Sample masks for the original images.
                     image_mask_dtype = conditional_latents.dtype
                     image_mask = 1 - (
@@ -1091,9 +1109,10 @@ def main():
                         * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
                     )
                     image_mask = image_mask.reshape(bsz, 1, 1, 1)
-                    # Final image conditioning.
+                    # Final image conditioning. - This is at times made zero during training (means unconditional generation?)
                     conditional_latents = image_mask * conditional_latents
-
+                # print(f"conditional_latents : {conditional_latents}")
+                
                 # conditional_latents_3 = conditional_latents[:,2,:].unsqueeze(1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
                 # conditional_latents = conditional_latents_1 + conditional_latents_2 + conditional_latents_3
                 # Concatenate the `conditional_latents` with the `noisy_latents`.
@@ -1215,20 +1234,62 @@ def main():
                             test_ssim = []
                             test_lpips = []
                             test_psnr = []
-                            for val_img_idx in range(args.num_validation_images):
+                            for val_img_idx in range(min(args.num_validation_images, len(validation_images_pil))):
                                 num_frames = args.num_frames
+                                # breakpoint()
+                                img = Image.open('obs_0.png')
+                                # val_resized_images = [validation_images_pil[val_img_idx][i].resize((args.width, args.height)) for i in range(3)]
                                 video_frames = pipeline(
                                     # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
                                     validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                                    # val_resized_images,
                                     height=args.height,
                                     width=args.width,
-                                    num_frames=num_frames,
+                                    num_frames=2,
                                     decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
                                     motion_bucket_id=127,
                                     fps=7,
                                     noise_aug_strength=0.02,
+                                    min_guidance_scale=1.0,
+                                    max_guidance_scale=3.0,
+                                    text = val_texts[val_img_idx]
                                     # generator=generator,
                                 ).frames[0]
+
+                                # frames_cond = pipeline(
+                                #     # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
+                                #     validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                                #     # val_resized_images,
+                                #     height=args.height,
+                                #     width=args.width,
+                                #     num_frames=num_frames,
+                                #     decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
+                                #     motion_bucket_id=127,
+                                #     fps=7,
+                                #     noise_aug_strength=0.02,
+                                #     min_guidance_scale=1.0,
+                                #     max_guidance_scale=1.0,
+                                #     text = val_texts[val_img_idx]
+                                #     # generator=generator,
+                                # ).frames[0]
+
+                                # frames_uncond = pipeline(
+                                #     # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
+                                #     validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                                #     # val_resized_images,
+                                #     height=args.height,
+                                #     width=args.width,
+                                #     num_frames=num_frames,
+                                #     decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
+                                #     motion_bucket_id=127,
+                                #     fps=7,
+                                #     noise_aug_strength=0.02,
+                                #     min_guidance_scale=0.0,
+                                #     max_guidance_scale=0.0,
+                                #     text = val_texts[val_img_idx]
+                                #     # generator=generator,
+                                # ).frames[0]
+
                                 print("Uploading validation images")
                                 out_file = os.path.join(
                                     val_save_dir,
@@ -1239,6 +1300,16 @@ def main():
                                     img = video_frames[i]
                                     video_frames[i] = np.array(img)
                                 pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
+                                
+                                # for i in range(num_frames):
+                                #     img = frames_uncond[i]
+                                #     frames_uncond[i] = np.array(img)
+                                # pred_video_uncond = np.array(frames_uncond).transpose(0, 3, 1, 2)
+                                
+                                # for i in range(num_frames):
+                                #     img = frames_cond[i]
+                                #     frames_cond[i] = np.array(img)
+                                # pred_video_cond = np.array(frames_cond).transpose(0, 3, 1, 2)
                                 # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
 
                                 # accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
@@ -1262,7 +1333,10 @@ def main():
                                 
                                 metrics_str = f"ssim_{test_ssim_val:.2f}_psnr_{test_psnr_val:.2f}_lpips_{test_lpips_val:.2f}"
                                 
-                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_{metrics_str}_{global_step}": wandb.Video(pred_video, fps=4)}, step=global_step)
+                                # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_{metrics_str}_{global_step}": wandb.Video(pred_video, fps=4)}, step=global_step)
+                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
+                                # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_uncond_{metrics_str}_{global_step}": wandb.Video(pred_video_uncond, fps=4)}, step=global_step)
+                                # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_cond_{metrics_str}_{global_step}": wandb.Video(pred_video_cond, fps=4)}, step=global_step)
                                 # accelerator.log({f"step_val_img_{val_img_idx}/pred_{metrics_str}": wandb.Video(pred_video, fps=4)}, step=global_step)
         
                                 export_to_gif(video_frames, out_file, 8)

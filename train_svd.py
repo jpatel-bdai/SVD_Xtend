@@ -326,7 +326,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=10,
+        default=5,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -865,7 +865,7 @@ def main():
         num_workers=args.num_workers,
     )
     train_dataloader.dataset.sample_validation = True
-    save_validation_images(train_dataloader, accelerator, args.num_validation_images)
+    # save_validation_images(train_dataloader, accelerator, args.num_validation_images)
     train_dataloader.dataset.sample_validation = False
     
     # Scheduler and math around the number of training steps.
@@ -1185,7 +1185,7 @@ def main():
                         # The models need unwrapping because for compatibility in distributed training mode.
                         pipeline = StableVideoDiffusionPipeline.from_pretrained(
                             args.pretrained_model_name_or_path,
-                            unet=accelerator.unwrap_model(unet),
+                            c=accelerator.unwrap_model(unet),
                             image_encoder=accelerator.unwrap_model(
                                 image_encoder),
                             vae=accelerator.unwrap_model(vae),

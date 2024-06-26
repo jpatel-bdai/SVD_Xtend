@@ -322,7 +322,7 @@ def parse_args():
     parser.add_argument(
         "--num_validation_images",
         type=int,
-        default=5,
+        default=20,
         help="Number of images that should be generated during validation with `validation_prompt`.",
     )
     parser.add_argument(
@@ -337,7 +337,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/storage/nfs/jpatel/svd_checkpoints/bridge_v2_ckpt/bridge_v2_ckpt",
+        default="/storage/nfs/jpatel/svd_checkpoints/bdai_val_ckpt_bkp",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -573,6 +573,14 @@ def download_image(url):
     )(url)
     return original_image
 
+def load_test_images(dir_path="/storage/nfs/jpatel/trial_imgs"):
+    test_images = []
+    for filename in os.listdir(dir_path):
+        if filename.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.gif')):
+            img_path = os.path.join(dir_path, filename)
+            img = Image.open(img_path)
+            test_images.append(img)
+    return test_images
 
 validation_images = []
 validation_images_pil = []
@@ -829,8 +837,11 @@ def main():
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
-
-    save_validation_images(train_dataloader, accelerator, args.num_validation_images)
+    train_dataloader.dataset.sample_validation = True
+    args.num_validation_images = len(train_dataloader.dataset.val_sequences)
+    # breakpoint()
+    # save_validation_images(train_dataloader, accelerator, args.num_validation_images)
+    train_dataloader.dataset.sample_validation = False
     
     # print(next)
 
@@ -1000,50 +1011,69 @@ def main():
             str(accelerator.device).replace(":0", ""), enabled=accelerator.mixed_precision == "fp16"
         ):
             val_images = validation_images
-            
-            for val_img_idx in range(args.num_validation_images):
+            test_images = load_test_images()
+            for val_img_idx in range(1): #min(args.num_validation_images, len(validation_images_pil))):
                 num_frames = args.num_frames
+                import time
+                test_img = Image.open('obs_0.png')
+                start_time = time.time()
                 video_frames = pipeline(
                     # load_image(val_images[val_img_idx])
-                    validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                    test_img.resize((args.width, args.height)),          
+                    # validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                    # test_images[val_img_idx].resize((args.width, args.height)),
                     height=args.height,
                     width=args.width,
-                    num_frames=num_frames,
+                    num_frames=2,
                     decode_chunk_size=8,
                     motion_bucket_id=127,
                     fps=7,
                     noise_aug_strength=0.02,
                     # generator=generator,
                 ).frames[0]
+                print(f"Inference took : {time.time() - start_time} seconds.")
                 print("Uploading validation images")
                 out_file = os.path.join(
                     val_save_dir,
                     f"step_{global_step}_val_img_{val_img_idx}.mp4",
                 )
 
-                for i in range(num_frames):
+                result_video = []
+                for i in range(2):
                     img = video_frames[i]
                     video_frames[i] = np.array(img)
+                    img_resized = cv2.resize(video_frames[i], (224, 224), interpolation=cv2.INTER_AREA)
+                    result_video.append(img_resized)
+                
+                pred_result_video = np.array(result_video).transpose(0, 3, 1, 2)
                 pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
 
                 # Compute only over the generated part
-                gtt = gt_videos[val_img_idx].unsqueeze(0).to(pipeline.device)[:,1:,:]
-                predt = torch.from_numpy(pred_video/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
-                predt = predt.to(gtt.dtype)
-                print(f"pred_video : {pred_video.shape}")
+                # gtt = gt_videos[val_img_idx].unsqueeze(0).to(pipeline.device)[:,1:,:]
+                # predt = torch.from_numpy(pred_video/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
+                # predt = predt.to(gtt.dtype)
+                # print(f"pred_video : {pred_video.shape}")
                 
-                # Compute metrics
-                fvd = metrics.FVD(device=pipeline.device)
-                ssim = metrics.get_ssim()
-                psnr = metrics.get_psnr()
-                lpips = metrics.get_lpips(device=pipeline.device)
+                # # Compute metrics
+                # fvd = metrics.FVD(device=pipeline.device)
+                # ssim = metrics.get_ssim()
+                # psnr = metrics.get_psnr()
+                # lpips = metrics.get_lpips(device=pipeline.device)
                 
-                test_ssim = ssim(predt, gtt)[0]
-                test_lpips = lpips(predt, gtt)[0]
-                test_psnr = psnr(predt, gtt)[0]
-                metrics_str = f"ssim_{test_ssim:.2f}_psnr_{test_psnr:.2f}_lpips_{test_lpips:.2f}"
+                # test_ssim = ssim(predt, gtt)[0]
+                # test_lpips = lpips(predt, gtt)[0]
+                # test_psnr = psnr(predt, gtt)[0]
+                # metrics_str = f"ssim_{test_ssim:.2f}_psnr_{test_psnr:.2f}_lpips_{test_lpips:.2f}"
                 
-                accelerator.log({f"step_val_img_{val_img_idx}/pred_{metrics_str}": wandb.Video(pred_video, fps=4)}, step=global_step)
+                # Overwrite the data file
+                file_path = "/workspaces/SVD_Xtend/updated_file.npz"
+                data = np.load(file_path)
+                data_dict = {key: data[key] for key in data}
+                data_dict['images'] = pred_result_video
+                np.savez(f'results/stacking_cups_logitech/{val_img_idx}.npz', **data_dict)
+                # breakpoint()
+                
+                accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_result_video, fps=4)}, step=global_step)
                 export_to_gif(video_frames, out_file, 8)
 
         if args.use_ema:
