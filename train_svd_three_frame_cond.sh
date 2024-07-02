@@ -9,4 +9,6 @@ export CUDA_VISIBLE_DEVICES=1 && accelerate launch train_svd_three_frame_cond.py
     --learning_rate=1e-5 --lr_warmup_steps=0 \
     --seed=123 \
     --mixed_precision="fp16" \
-    --validation_steps=500
+    --validation_steps=50
+    
+# --resume_from_checkpoint=./output_test/checkpoint-3000 \

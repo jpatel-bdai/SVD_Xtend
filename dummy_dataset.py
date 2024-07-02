@@ -314,11 +314,12 @@ class BDAIDataset(Dataset):
         return {'pixel_values': pixel_values, "task_text" : task}
 
 class BDAIHighResJPGDataset(Dataset):
-    def __init__(self, num_samples=172, width=1024, height=576, sample_frames=25):
+    def __init__(self, num_samples=172, width=1024, height=576, sample_frames=25, original_fps = False):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
             channels (int): Number of channels, default is 3 for RGB.
+            original_fps (bool): If it is required to have original FPS
         """
         # self.num_samples = num_samples
         self.channels = 3
@@ -331,6 +332,7 @@ class BDAIHighResJPGDataset(Dataset):
         self.num_samples = len(self.dirs_with_jpgs)
         print(f"Training samples: {self.num_samples}")
         print("Done")
+        self.original_fps = original_fps
         self.get_video(5)
         
     def __len__(self):
@@ -348,8 +350,14 @@ class BDAIHighResJPGDataset(Dataset):
                 img_array = np.array(img, dtype=np.uint8)
                 # Ensure the image has 3 channels (RGB)
                 episode.append(img_array)
+        if not self.original_fps:
+            episode = self.get_samples(episode)
+        else:
+            self.original_seq_len = len(episode)
+            max_start_idx = self.original_seq_len - self.sample_frames
+            start_idx = random.randint(0, max_start_idx)
+            episode = episode[start_idx: start_idx+self.sample_frames]
 
-        episode = self.get_samples(episode)
 
     def get_samples(self, seq):
         N = len(seq)
@@ -372,30 +380,6 @@ class BDAIHighResJPGDataset(Dataset):
 
         return dirs_with_jpgs
     
-    def extract_seq(self, seqs_path):
-        seqs = np.load(seqs_path, allow_pickle=True)
-        extract_language_from_npy = "language" in seqs[0].keys()
-        task = [] if extract_language_from_npy else seqs_path.split('/')[-3].replace('_', ' ')
-        outputs = []
-
-        for seq in seqs:
-            observations = seq["observations"]
-            viewpoints = [v for v in observations[0].keys() if "image" in v]
-            N = len(observations)
-            for viewpoint in viewpoints:
-                full_obs = [observations[i][viewpoint] for i in range(N)]
-                print(f"Episode length : {len(full_obs)}")
-                sampled_obs = self.get_samples(full_obs)
-                outputs.append(sampled_obs)
-                if extract_language_from_npy:
-                    if seq['language'][0]=="":
-                        task.append("Robot doing a task")
-                    else:
-                        task.append(seq['language'][0])
-        tasks = task if extract_language_from_npy else [task] * len(outputs)
-
-        return outputs, tasks
-    
     def __getitem__(self, idx):
         """
         Args:
@@ -416,8 +400,16 @@ class BDAIHighResJPGDataset(Dataset):
                 # Ensure the image has 3 channels (RGB)
                 episode.append(img_array)
         
-        episode = self.get_samples(episode)
-        
+        if not self.original_fps:
+            episode = self.get_samples(episode)
+            original_episode = episode
+        else:
+            self.original_seq_len = len(episode)
+            max_start_idx = self.original_seq_len - self.sample_frames
+            start_idx = random.randint(0, max_start_idx)
+            original_episode = episode
+            episode = episode[start_idx: start_idx+self.sample_frames]
+
         pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
@@ -443,7 +435,7 @@ class BDAIHighResJPGDataset(Dataset):
             pixel_values[i] = img_normalized
             
         task = "robot doing a task"
-        return {'pixel_values': pixel_values, "task_text" : task}
+        return {'pixel_values': pixel_values, "task_text" : task, "original_episode": original_episode}
 
 class BDAIZoomInOutDataset(Dataset):
     def __init__(self, num_samples=10, width=1024, height=576, sample_frames=25):

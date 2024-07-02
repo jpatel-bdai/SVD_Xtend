@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=0 && accelerate launch train_svd.py \
+export CUDA_VISIBLE_DEVICES=1 && accelerate launch train_svd.py \
     --pretrained_model_name_or_path=stabilityai/stable-video-diffusion-img2vid-xt \
     --per_gpu_batch_size=1 \
     --gradient_accumulation_steps=1 \

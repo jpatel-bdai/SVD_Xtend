@@ -623,7 +623,14 @@ def save_img_from_tensor(normalized_tensor, image_name):
     image_tensor = normalized_tensor.byte()
 
     # Convert PyTorch tensor to NumPy array
+    if image_tensor.ndim==2:
+        image_np = image_tensor.cpu().numpy()  # (320, 512, 3)
+        image_np = cv2.cvtColor(image_np, cv2.COLOR_GRAY2BGR)
+        cv2.imwrite(f'{image_name}.png', image_np)
+        return
+        
     image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # (320, 512, 3)
+    # image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # (320, 512, 3)
 
     image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
     
@@ -825,7 +832,8 @@ def main():
 
     # Customize the parameters that need to be trained; if necessary, you can uncomment them yourself.
     for name, para in unet.named_parameters():
-        if 'temporal_transformer_block' in name:
+        # Unfreezeing all attention layers where encoder_hidden_states is passed.
+        if 'transformer_block' in name:
             parameters_list.append(para)
             para.requires_grad = True
         else:
@@ -1057,6 +1065,9 @@ def main():
 
                 inp_noisy_latents = noisy_latents / ((sigmas**2 + 1) ** 0.5)
 
+                breakpoint()
+                encoder_hidden_states = encode_image(pixel_values[:, 0, :, :, :].float())
+                
                 # Get the text embedding for conditioning.
                 encoder_hidden_states = encode_image(
                     pixel_values[:, 0, :, :, :].float())
@@ -1084,10 +1095,10 @@ def main():
                 half_value = text_features_1024.shape[1]//2
                 if batch['task_text'][0]=="move the red square to blue circle.":
                     text_features_1024 = torch.zeros_like(text_features_1024)
-                    text_features_1024[0][:half_value] = 1.0
+                    text_features_1024[0][:8] = 8.0
                 elif batch['task_text'][0]=="move the red square to green triangle.":
                     text_features_1024 = torch.zeros_like(text_features_1024)
-                    text_features_1024[0][half_value:] = 1.0
+                    text_features_1024[0][512:535] = -7.0
 
                 # Conditioning dropout to support classifier-free guidance during inference. For more details
                 # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
@@ -1099,6 +1110,8 @@ def main():
                     # Final text conditioning.
                     null_conditioning = torch.zeros_like(encoder_hidden_states)
                     prompt_mask = torch.ones_like(prompt_mask)
+                    # encoder_hidden_states = torch.where(
+                    #     prompt_mask, null_conditioning, encoder_hidden_states.unsqueeze(1))
                     encoder_hidden_states = torch.where(
                         prompt_mask, text_features_1024.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
                     # Sample masks for the original images.
@@ -1112,7 +1125,7 @@ def main():
                     # Final image conditioning. - This is at times made zero during training (means unconditional generation?)
                     conditional_latents = image_mask * conditional_latents
                 # print(f"conditional_latents : {conditional_latents}")
-                
+                # breakpoint()
                 # conditional_latents_3 = conditional_latents[:,2,:].unsqueeze(1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
                 # conditional_latents = conditional_latents_1 + conditional_latents_2 + conditional_latents_3
                 # Concatenate the `conditional_latents` with the `noisy_latents`.
@@ -1125,7 +1138,7 @@ def main():
                 target = latents
                 model_pred = unet(
                     inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
-
+                # breakpoint()
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas**2 + 1)**0.5)
                 c_skip = 1 / (sigmas**2 + 1)
@@ -1245,7 +1258,7 @@ def main():
                                     # val_resized_images,
                                     height=args.height,
                                     width=args.width,
-                                    num_frames=2,
+                                    num_frames=num_frames,
                                     decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
                                     motion_bucket_id=127,
                                     fps=7,
@@ -1256,39 +1269,39 @@ def main():
                                     # generator=generator,
                                 ).frames[0]
 
-                                # frames_cond = pipeline(
-                                #     # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
-                                #     validation_images_pil[val_img_idx].resize((args.width, args.height)),
-                                #     # val_resized_images,
-                                #     height=args.height,
-                                #     width=args.width,
-                                #     num_frames=num_frames,
-                                #     decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
-                                #     motion_bucket_id=127,
-                                #     fps=7,
-                                #     noise_aug_strength=0.02,
-                                #     min_guidance_scale=1.0,
-                                #     max_guidance_scale=1.0,
-                                #     text = val_texts[val_img_idx]
-                                #     # generator=generator,
-                                # ).frames[0]
+                                frames_cond = pipeline(
+                                    # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
+                                    validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                                    # val_resized_images,
+                                    height=args.height,
+                                    width=args.width,
+                                    num_frames=num_frames,
+                                    decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
+                                    motion_bucket_id=127,
+                                    fps=7,
+                                    noise_aug_strength=0.02,
+                                    min_guidance_scale=1.0,
+                                    max_guidance_scale=1.0,
+                                    text = val_texts[val_img_idx]
+                                    # generator=generator,
+                                ).frames[0]
 
-                                # frames_uncond = pipeline(
-                                #     # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
-                                #     validation_images_pil[val_img_idx].resize((args.width, args.height)),
-                                #     # val_resized_images,
-                                #     height=args.height,
-                                #     width=args.width,
-                                #     num_frames=num_frames,
-                                #     decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
-                                #     motion_bucket_id=127,
-                                #     fps=7,
-                                #     noise_aug_strength=0.02,
-                                #     min_guidance_scale=0.0,
-                                #     max_guidance_scale=0.0,
-                                #     text = val_texts[val_img_idx]
-                                #     # generator=generator,
-                                # ).frames[0]
+                                frames_uncond = pipeline(
+                                    # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
+                                    validation_images_pil[val_img_idx].resize((args.width, args.height)),
+                                    # val_resized_images,
+                                    height=args.height,
+                                    width=args.width,
+                                    num_frames=num_frames,
+                                    decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
+                                    motion_bucket_id=127,
+                                    fps=7,
+                                    noise_aug_strength=0.02,
+                                    min_guidance_scale=0.0,
+                                    max_guidance_scale=0.0,
+                                    text = val_texts[val_img_idx]
+                                    # generator=generator,
+                                ).frames[0]
 
                                 print("Uploading validation images")
                                 out_file = os.path.join(
@@ -1301,15 +1314,15 @@ def main():
                                     video_frames[i] = np.array(img)
                                 pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
                                 
-                                # for i in range(num_frames):
-                                #     img = frames_uncond[i]
-                                #     frames_uncond[i] = np.array(img)
-                                # pred_video_uncond = np.array(frames_uncond).transpose(0, 3, 1, 2)
+                                for i in range(num_frames):
+                                    img = frames_uncond[i]
+                                    frames_uncond[i] = np.array(img)
+                                pred_video_uncond = np.array(frames_uncond).transpose(0, 3, 1, 2)
                                 
-                                # for i in range(num_frames):
-                                #     img = frames_cond[i]
-                                #     frames_cond[i] = np.array(img)
-                                # pred_video_cond = np.array(frames_cond).transpose(0, 3, 1, 2)
+                                for i in range(num_frames):
+                                    img = frames_cond[i]
+                                    frames_cond[i] = np.array(img)
+                                pred_video_cond = np.array(frames_cond).transpose(0, 3, 1, 2)
                                 # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
 
                                 # accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
@@ -1335,8 +1348,8 @@ def main():
                                 
                                 # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_{metrics_str}_{global_step}": wandb.Video(pred_video, fps=4)}, step=global_step)
                                 accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
-                                # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_uncond_{metrics_str}_{global_step}": wandb.Video(pred_video_uncond, fps=4)}, step=global_step)
-                                # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_cond_{metrics_str}_{global_step}": wandb.Video(pred_video_cond, fps=4)}, step=global_step)
+                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_uncond": wandb.Video(pred_video_uncond, fps=4)}, step=global_step)
+                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_cond": wandb.Video(pred_video_cond, fps=4)}, step=global_step)
                                 # accelerator.log({f"step_val_img_{val_img_idx}/pred_{metrics_str}": wandb.Video(pred_video, fps=4)}, step=global_step)
         
                                 export_to_gif(video_frames, out_file, 8)
