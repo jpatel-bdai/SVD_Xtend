@@ -314,7 +314,7 @@ class BDAIDataset(Dataset):
         return {'pixel_values': pixel_values, "task_text" : task}
 
 class BDAIHighResJPGDataset(Dataset):
-    def __init__(self, num_samples=172, width=1024, height=576, sample_frames=25, original_fps = False):
+    def __init__(self, num_samples=50, width=1024, height=576, sample_frames=25, original_fps = False):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -328,6 +328,7 @@ class BDAIHighResJPGDataset(Dataset):
         self.sample_frames = sample_frames
         self.sample_per_seq = self.sample_frames
         data_path = "/storage/nfs/jpatel/high_res_in_house_datasets/"
+        # data_path = "/storage/nfs/jpatel/franka_data/franka_jpg/place_cube_in_tray_20240510_185930"
         self.dirs_with_jpgs = list(self.get_dirs_with_jpgs(data_path))
         self.num_samples = len(self.dirs_with_jpgs)
         print(f"Training samples: {self.num_samples}")
@@ -342,6 +343,10 @@ class BDAIHighResJPGDataset(Dataset):
         dir_name = self.dirs_with_jpgs[idx]
         image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.jpg'))]
         sorted_image_files = sorted(image_files, key=lambda x: int(x.split('_')[1].split('.')[0]))
+
+        # image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.png'))]
+        # sorted_image_files = image_files
+
         episode = []
         for image_file in sorted_image_files:
             image_path = os.path.join(dir_name, image_file)
@@ -377,7 +382,8 @@ class BDAIHighResJPGDataset(Dataset):
             # Check if any .jpg files are in the current directory
             if any(file.lower().endswith('.jpg') for file in files):
                 dirs_with_jpgs.add(root)
-
+            # if any(file.lower().endswith('.png') for file in files):
+            #     dirs_with_jpgs.add(root)
         return dirs_with_jpgs
     
     def __getitem__(self, idx):
@@ -391,6 +397,10 @@ class BDAIHighResJPGDataset(Dataset):
         dir_name = self.dirs_with_jpgs[idx]
         image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.jpg'))]
         sorted_image_files = sorted(image_files, key=lambda x: int(x.split('_')[1].split('.')[0]))
+
+        # image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.png'))]
+        # sorted_image_files = image_files
+
         episode = []
         for image_file in sorted_image_files:
             image_path = os.path.join(dir_name, image_file)

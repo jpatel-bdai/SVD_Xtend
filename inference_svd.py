@@ -1034,10 +1034,10 @@ def main():
             for val_img_idx in range(min(args.num_validation_images, len(validation_images_pil))):
                 original_video = original_videos[val_img_idx]
                 # num_frames = args.num_frames
-                for num_frames in range(5, 30, 5):
+                for num_frames in range(25, 30, 5):
                     all_frames = []
                     gt_image = Image.fromarray(np.transpose(original_video[0], (1, 2, 0)).astype(np.uint8))
-                    num_pred_frames = len(original_video)
+                    num_pred_frames = len(original_video) + 10
                     print("Generating video : ", val_img_idx, num_frames)
                     for i in range(math.ceil(num_pred_frames/num_frames)):
                         video_frames = pipeline(

@@ -341,7 +341,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/storage/nfs/jpatel/svd_checkpoints/bdai_datasets_highresfps_ckpt/",
+        default="/storage/nfs/jpatel/svd_checkpoints/franka_ckpt",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -653,6 +653,7 @@ def main():
     accelerator_project_config = ProjectConfiguration(
         project_dir=args.output_dir, logging_dir=logging_dir)
     # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    # breakpoint()
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -1080,7 +1081,7 @@ def main():
                 # so I adopted this approach. The same applies to the 'fps' (frames per second).
                 added_time_ids = _get_add_time_ids(
                     7, # fixed
-                    127, # motion_bucket_id = 127, fixed
+                    127, # motion_bucket_id = 127, fixed  # This&That says 200 is better 
                     noise_aug_strength, # noise_aug_strength == cond_sigmas
                     encoder_hidden_states.dtype,
                     bsz,
