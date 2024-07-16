@@ -61,7 +61,7 @@ import json
 import time
 import wandb
 import cv2
-from dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset
+from dummy_dataset import DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset
 
 from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import metrics
@@ -341,7 +341,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/storage/nfs/jpatel/svd_checkpoints/franka_ckpt",
+        default="/storage/nfs/jpatel/svd_checkpoints/rtx_ckpt",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -592,13 +592,14 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
         print(f"Uploading groud truth images {saved_imgs}")
         img_tensor = batch['pixel_values'][0][0]
         original_episode = batch['original_episode']
-        validation_original_frames.append(len(original_episode))
-        original_video = torch.stack(original_episode, dim=0).squeeze(1).permute(0,3,1,2).cpu().detach().numpy()
+        validation_original_frames.append(original_episode.shape[1])
+        original_video = original_episode.squeeze(0).permute(0,3,1,2).cpu().detach().numpy()
+        # original_video = torch.stack(original_episode, dim=0).squeeze(1).permute(0,3,1,2).cpu().detach().numpy()
         video_array_resized = np.zeros((*original_video.shape[:2], 320, 512))
         for i in range(original_video.shape[0]):
             for j in range(3):
                 video_array_resized[i,j] = cv2.resize(original_video[i, j], (512, 320))
-        print(f"video_array_resized : {video_array_resized.shape} , {video_array_resized.dtype}")
+        
         original_videos.append(video_array_resized)
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (img_tensor + 1) / 2
@@ -608,7 +609,8 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
 
         # Convert the NumPy array to a PIL Image
         image = Image.fromarray(array)
-        validation_images_pil.append(image)
+        # Appending the first image in the original video instead of the current video first image 
+        validation_images_pil.append(Image.fromarray(np.transpose(video_array_resized[0], (1, 2, 0)).astype('uint8')))
         video_tensor = batch['pixel_values'][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (video_tensor + 1) / 2
@@ -869,7 +871,7 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_data = BDAIHighResJPGDataset(width=args.width, height=args.height, sample_frames=args.num_frames, original_fps = True)
+    train_data = RTXDataset(width=args.width, height=args.height, sample_frames=args.num_frames, original_fps = True)
     train_dataset, test_dataset = torch.utils.data.random_split(train_data, [0.9, 0.1])
     
     sampler = RandomSampler(train_dataset)
@@ -975,9 +977,9 @@ def main():
     ):
         add_time_ids = [fps, motion_bucket_id, noise_aug_strength]
 
-        passed_add_embed_dim = unet.config.addition_time_embed_dim * \
+        passed_add_embed_dim = unet.module.config.addition_time_embed_dim * \
             len(add_time_ids)
-        expected_add_embed_dim = unet.add_embedding.linear_1.in_features
+        expected_add_embed_dim = unet.module.add_embedding.linear_1.in_features
 
         if expected_add_embed_dim != passed_add_embed_dim:
             raise ValueError(
@@ -1237,6 +1239,7 @@ def main():
                                 num_frames = args.num_frames
                                 
                                 num_pred_frames = validation_original_frames[val_img_idx]
+                                print(f"Num_pred_frames : {num_pred_frames}")
                                 gt_image = validation_images_pil[val_img_idx]
                                 all_frames = []
                                 for i in range(math.ceil(num_pred_frames/num_frames)):
@@ -1289,6 +1292,7 @@ def main():
                                 ssim = metrics.get_ssim()
                                 psnr = metrics.get_psnr()
                                 lpips = metrics.get_lpips(device=pipeline.device)
+                                # breakpoint()
                                 test_ssim_val = ssim(predt, gtt)[0]
                                 # breakpoint()
                                 # test_lpips_val = lpips(predt, gtt)[0]

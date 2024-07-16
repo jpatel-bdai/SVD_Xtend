@@ -1,6 +1,6 @@
 export CUDA_VISIBLE_DEVICES=0 && accelerate launch inference_svd.py \
     --pretrained_model_name_or_path=stabilityai/stable-video-diffusion-img2vid-xt \
-    --resume_from_checkpoint=/storage/nfs/jpatel/svd_checkpoints/bdai_datasets_highresfps_ckpt_bkp/checkpoint-312000 \
+    --resume_from_checkpoint=/storage/nfs/jpatel/svd_checkpoints/bdai_datasets_highresfps_ckpt_bkp/checkpoint-500000 \
     --per_gpu_batch_size=1 \
     --gradient_accumulation_steps=1 \
     --max_train_steps=500000 \
