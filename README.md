@@ -17,7 +17,7 @@
 ```
 ImportError: /usr/local/lib/python3.10/dist-packages/transformer_engine_extensions.cpython-310-x86_64-linux-gnu.so: undefined symbol: _ZN5torch3jit17parseSchemaOrNameERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE
 ```
-If you get the above error, run `pip uninstall transformers-engine` and then install dependencies from `requirements.txt` using the following command.
+If you get the above error, run `pip uninstall transformer-engine` and then install dependencies from `requirements.txt` using the following command.
 
 ```
 pip install -r requirements.txt`
