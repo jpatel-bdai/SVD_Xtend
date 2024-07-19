@@ -9,34 +9,25 @@ import numpy as np
 from omegaconf import DictConfig, OmegaConf
 from taming.models.vqgan import VQModel
 from teco.metrics.utils import get_lpips, get_psnr, get_ssim
+import random
+import time
 
-class Dataloader:
+class vqganDataloader:
     """HeliosPredictor processes test batches concurrently on multiple GPUs,
     performs inference on them and computes test_loss, metrics, ground_truth videos
     and predicted videos for visualization.
     """
 
-    def __init__(self, test_config: dict):
-        """Load the model for inference
-
-        Args:
-            test_config (dict): Config file to initialize the model
-            test_batch (tuple[torch.Tensor, torch.Tensor]): Temporary batch for forward pass
-        """
-        self.test_config = DictConfig(test_config)
+    def __init__(self):
         self.dtype = None
-        
-        print("Loading VQGAN...")
-        vqgan_config = OmegaConf.load(self.test_config.vqgan_config)
-        vqgan_model = VQModel(**vqgan_config.model.params).eval()
 
-        vqgan_model.requires_grad_(False)
-        if self.test_config.precision in ["bf16-true", "bf16-mixed", "bf16"]:
-            print(f"casting to {self.test_config.precision}")
-            vqgan_model = vqgan_model.bfloat16()
-        elif self.test_config.precision in ["16-true"]:
-            print(f"{self.test_config.precision} is not supported")
-        self.vqgan_model = vqgan_model.to("cuda:0")
+        print("Loading VQGAN...")
+        vqgan_config = OmegaConf.load("/workspaces/bdai/projects/helios/configs/vq_f4.yaml")
+        self.vqgan_model = VQModel(**vqgan_config.model.params).eval()
+
+        self.vqgan_model.requires_grad_(False)
+        self.vqgan_model = self.vqgan_model.bfloat16()
+        self.vqgan_model = self.vqgan_model.to("cuda:0")
         print("Loaded VQGAN")
 
         # Metrics
@@ -44,25 +35,15 @@ class Dataloader:
         self.psnr = get_psnr()
         self.lpips = get_lpips(device="cuda:0")
 
-    def _decode_batch_in_chunks(self, batch: torch.Tensor, start_idx: int = 0) -> torch.Tensor:
-        """Decode a single batch of data by dividing them into small temporal chunks, decoding them
-        and finally concatenating them into one video, with the intention of saving memory.
-
-        Args:
-            batch (torch.Tensor): data in TCHW format.
-            start_idx (int): starting index (in dim T) when "chunking". Default: 0.
-
-        Returns:
-            torch.Tensor: the decoded video, of data type torch.uint8.
-        """
+    def _decode_batch_in_chunks(self, batch: torch.Tensor, seq_len) -> torch.Tensor:
         # Gets the dtype of the model.  Assumes all the parameters of the model have the same dtype
         # and that the dtype doesn't change after initialization
         if self.dtype is None:
             self.dtype = next(self.vqgan_model.parameters()).dtype
 
         videos = []
-        for start_time in range(start_idx, 90, 9):
-            end_time = min(start_time + 9, 90)
+        for start_time in range(0, seq_len, 9):
+            end_time = min(start_time + 9, seq_len)
             chunk = batch[start_time:end_time]
             video_chunk = self._decode_one_chunk(chunk)
             videos.append(video_chunk)
@@ -70,14 +51,6 @@ class Dataloader:
         return videos
 
     def _decode_one_chunk(self, chunk: torch.Tensor) -> torch.Tensor:
-        """Decode one chunk of data and return the corresponding video.
-
-        Args:
-            chunk (torch.Tensor): data in TCHW format, typically with a small size in dim T.
-
-        Returns:
-            torch.Tensor: the decoded video, of data type torch.uint8.
-        """
         if self.dtype is None:
             self.dtype = next(self.vqgan_model.parameters()).dtype
 
@@ -93,22 +66,24 @@ class Dataloader:
             pred_video = self._decode_batch_in_chunks(batch, seq_len)
         return pred_video
 
-import hydra
-@hydra.main(config_path="/workspaces/bdai/projects/helios/configs", config_name="config.yaml")
-def main(config: DictConfig):
-    config_as_dict: dict = OmegaConf.to_container(cfg=config, resolve=True)
-    
-    path = "/workspaces/bdai/train/dataset_splits/rtx_enc_emb_test_len100_frac25_npz.txt"
+def main():
+    hp = vqganDataloader()
+    path = "/workspaces/bdai/train/dataset_splits/rtx_enc_emb_train_len100_frac25_npz.txt"
     train_dataset_sequences = open(path,"r").readlines()
-    hp = Dataloader(config_as_dict)
-    filepath, start_idx = train_dataset_sequences[0].strip().split(",")
-    data = np.load(filepath,allow_pickle=True)
-    seq_len = data["embedding"].shape[0]
-    batch = data["embedding"][int(start_idx):]
-    breakpoint()
-    batch = torch.from_numpy(batch).to("cuda:0")
-    pred_video = hp(batch, seq_len)
-
+    for i, train_dataset_sequence in enumerate(train_dataset_sequences):
+        start_time = time.time()
+        filepath, start_idx = train_dataset_sequence.strip().split(",")
+        data = np.load(filepath,allow_pickle=True)
+        seq_len = data["embedding"].shape[0] - int(start_idx)
+        batch = data["embedding"][int(start_idx):]
+        batch = torch.from_numpy(batch).to("cuda:0")
+        pred_video = hp(batch, seq_len)
+        episode = pred_video.permute(0,2,3,1).cpu().detach().numpy()
+        save_path = filepath.replace("nvme/rtx_enc_emb","nfs/jpatel/rtx_enc_emb")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        np.savez(save_path, video=episode)
+        print(f"Processing {i}/{len(train_dataset_sequences)} : time : {time.time()- start_time} s")
+        
 if __name__=="__main__":
     main()
     

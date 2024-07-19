@@ -61,13 +61,13 @@ import json
 import time
 import wandb
 import cv2
-from dummy_dataset import DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset
+from dummy_dataset import DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
 
 from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import metrics
 
-text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
-text_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+# text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
+# text_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
@@ -341,7 +341,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/storage/nfs/jpatel/svd_checkpoints/rtx_ckpt",
+        default="/storage/nfs/jpatel/svd_checkpoints/rtx_ckpt_train_test",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -871,7 +871,7 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_data = RTXDataset(width=args.width, height=args.height, sample_frames=args.num_frames, original_fps = True)
+    train_data = RTXHeliosTrainTestSplitDataset(width=args.width, height=args.height, sample_frames=args.num_frames, original_fps = True)
     train_dataset, test_dataset = torch.utils.data.random_split(train_data, [0.9, 0.1])
     
     sampler = RandomSampler(train_dataset)
@@ -880,6 +880,7 @@ def main():
         sampler=sampler,
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
+        multiprocessing_context='spawn'
     )
     
     test_sampler = RandomSampler(test_dataset)
@@ -888,6 +889,7 @@ def main():
         sampler=test_sampler,
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
+        multiprocessing_context='spawn'
     )
     # train_dataloader.dataset.sample_validation = True
     save_validation_images(test_dataloader, accelerator, args.num_validation_images)

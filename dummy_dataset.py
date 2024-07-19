@@ -9,6 +9,7 @@ from tqdm import tqdm
 import os
 import time
 from PIL import Image
+from vqgan_dataloader import vqganDataloader
 
 class DummyDataset(Dataset):
     def __init__(self, num_samples=1000, width=1024, height=576, sample_frames=15):
@@ -215,7 +216,9 @@ class RTXDataset(Dataset):
 
         # Randomly select an episode from episodes
         episode = episodes[np.random.randint(episodes.shape[0])]
-        
+        # episode.shape : (430, 224, 224, 3)
+        # episode.dtype : dtype('uint8')
+                    
     def __len__(self):
         return self.num_samples
 
@@ -281,6 +284,93 @@ class RTXDataset(Dataset):
         
         task = "robot doing a task"
         return {'pixel_values': pixel_values, "task_text" : task, "original_episode": original_episode}
+
+class RTXHeliosTrainTestSplitDataset(Dataset):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25, original_fps = True):
+        """
+        Args:
+            num_samples (int): Number of samples in the dataset.
+            channels (int): Number of channels, default is 3 for RGB.
+        """
+        self.num_samples = num_samples
+        # Define the path to the folder containing video frames
+        self.channels = 3
+        self.width = width
+        self.height = height
+        self.sample_frames = sample_frames
+        self.current_idx = 0
+        train_path = "/workspaces/bdai/train/dataset_splits/rtx_enc_emb_train_len100_frac25_npz.txt"
+        self.train_dataset_sequences = open(train_path,"r").readlines()
+    #     self._load_video()
+        
+    # def _load_video(self):
+    #     chosen_sequence = self.train_dataset_sequences[self.current_idx]
+    #     filepath, start_idx = chosen_sequence.strip().split(",")
+    #     video_filepath = filepath.replace("nvme/rtx_enc_emb", "nfs/jpatel/rtx_enc_emb")
+    #     data = np.load(video_filepath,allow_pickle=True)
+    #     episode = data["video"][int(start_idx):]
+    
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to return.
+
+        Returns:
+            dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
+        """
+        # Randomly select a dataset
+        found_episode = False
+        while not found_episode:
+            chosen_sequence = self.train_dataset_sequences[self.current_idx]
+            print(f"Chose {self.current_idx} : {chosen_sequence}")
+            self.current_idx += 1
+            filepath, start_idx = chosen_sequence.strip().split(",")
+            video_filepath = filepath.replace("nvme/rtx_enc_emb", "nfs/jpatel/rtx_enc_emb")
+            data = np.load(video_filepath,allow_pickle=True)
+            episode = data["video"]
+            print(f"Episode : {episode.shape}")
+            if len(episode)>self.sample_frames:
+                found_episode = True
+            else:
+                print(f"Finding new episode, Length of current episode : {len(episode)}")
+
+        # Randomly select a start index for frame sequence
+        start_idx = random.randint(0, episode.shape[0] - self.sample_frames)
+        start_idx = 0
+        original_episode = episode
+        episode = episode[start_idx:start_idx + self.sample_frames]
+
+        # Initialize a tensor to store the pixel values
+        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+
+        # Load and process each frame
+        for i, frame in enumerate(episode):
+            if i > (self.sample_frames-1): break
+            # Resize the image and convert it to a tensor
+            img_resized = cv2.resize(frame, (self.width, self.height))
+            
+            # img_resized = np.resize(frame, (self.height, self.width, 3))
+            img_tensor = torch.from_numpy(img_resized).float()
+            
+            # Normalize the image by scaling pixel values to [-1, 1]
+            img_normalized = img_tensor / 127.5 - 1
+
+            # Rearrange channels if necessary
+            if self.channels == 3:
+                img_normalized = img_normalized.permute(
+                    2, 0, 1)  # For RGB images
+            elif self.channels == 1:
+                img_normalized = img_normalized.mean(
+                    dim=2, keepdim=True)  # For grayscale images
+
+            pixel_values[i] = img_normalized
+        
+        task = "robot doing a task"
+        return {'pixel_values': pixel_values, "task_text" : task, "original_episode": original_episode}
+    
     
 class BDAIDataset(Dataset):
     def __init__(self, num_samples=172, width=1024, height=576, sample_frames=25):
