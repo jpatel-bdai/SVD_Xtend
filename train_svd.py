@@ -341,7 +341,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/storage/nfs/jpatel/svd_checkpoints/rtx_ckpt_train_test",
+        default="None",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(

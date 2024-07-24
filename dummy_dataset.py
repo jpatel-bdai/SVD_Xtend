@@ -9,7 +9,7 @@ from tqdm import tqdm
 import os
 import time
 from PIL import Image
-from vqgan_dataloader import vqganDataloader
+# from vqgan_dataloader import vqganDataloader
 
 class DummyDataset(Dataset):
     def __init__(self, num_samples=1000, width=1024, height=576, sample_frames=15):
@@ -805,6 +805,9 @@ class BDAIZoomInOutDataset(Dataset):
         return {'pixel_values': pixel_values, "task_text" : task}
 
 class ShapeDataset(Dataset):
+    """
+    This dataset is only compatible with train_svd_lang.py
+    """
     def __init__(self, num_samples=2, width=1024, height=576, sample_frames=25):
         """
         Args:
@@ -978,4 +981,4 @@ class ShapeDataset(Dataset):
 
             pixel_values[i] = img_normalized
             
-        return {'pixel_values': pixel_values, "task_text" : instruction}
+        return {'pixel_values': pixel_values, "task_text" : instruction, "original_episode":episode}
