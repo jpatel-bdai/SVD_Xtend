@@ -595,11 +595,11 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
         validation_original_frames.append(len(original_episode))
         original_video = original_episode.squeeze(1).permute(0,3,1,2).cpu().detach().numpy()
         # original_video = torch.stack(original_episode, dim=0).squeeze(1).permute(0,3,1,2).cpu().detach().numpy()
-        video_array_resized = np.zeros((*original_video.shape[:2], 320, 512))
+        video_array_resized = np.zeros((*original_video.shape[:2], 128, 128)) # 320, 512
         for i in range(original_video.shape[0]):
             for j in range(3):
-                video_array_resized[i,j] = cv2.resize(original_video[i, j], (512, 320))
-        
+                video_array_resized[i,j] = cv2.resize(original_video[i, j], (128, 128)) # (512, 320))
+
         original_videos.append(video_array_resized)
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (img_tensor + 1) / 2
@@ -1287,7 +1287,7 @@ def main():
                                 
                                 predt = torch.from_numpy(pred_video_all/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
                                 predt = predt.to(gtt.dtype)
-                                print(f"pred_video : {pred_video_all.shape}")
+                                
                                 # Compute metrics
                                 fvd = metrics.FVD(device=pipeline.device)
                                 ssim = metrics.get_ssim()
