@@ -9,10 +9,13 @@ accelerate launch train_svd_lang.py \
     --learning_rate=1e-5 --lr_warmup_steps=0 \
     --seed=123 \
     --mixed_precision="fp16" \
-    --validation_steps=50 \
+    --validation_steps=1000 \
     --num_validation_images=2 \
-    --output_dir=/storage/nfs/jpatel/svd_checkpoints/lang_conditioning_test
+    --output_dir=/storage/nfs/jpatel/svd_checkpoints/lang_conditioning_test_bkp \
+    --conditioning_dropout_prob=0
 
+
+# --resume_from_checkpoint=/storage/nfs/jpatel/svd_checkpoints/lang_conditioning_test_bkp/checkpoint-2000 \
 
 # distributed_type: 'NO'
 # gpu_ids: '0'

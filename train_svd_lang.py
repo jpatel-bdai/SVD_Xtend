@@ -41,6 +41,7 @@ from huggingface_hub import create_repo, upload_folder
 from packaging import version
 from tqdm.auto import tqdm
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+from transformers import AutoTokenizer, CLIPTextModelWithProjection
 from einops import rearrange
 
 import diffusers
@@ -75,6 +76,8 @@ check_min_version("0.24.0.dev0")
 logger = get_logger(__name__, log_level="INFO")
 
 # copy from https://github.com/crowsonkb/k-diffusion.git
+
+
 def stratified_uniform(shape, group=0, groups=1, dtype=None, device=None):
     """Draws stratified samples from a uniform distribution."""
     if groups <= 0:
@@ -114,6 +117,7 @@ def rand_cosine_interpolated(shape, image_d, noise_d_low, noise_d_high, sigma_da
     logsnr = logsnr_schedule_cosine_interpolated(
         u, image_d, noise_d_low, noise_d_high, logsnr_min, logsnr_max)
     return torch.exp(-logsnr / 2) * sigma_data
+
 
 def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
     """Draws samples from an lognormal distribution."""
@@ -584,21 +588,27 @@ validation_original_frames = []
 original_videos = []
 val_texts = []
 gt_videos = []
+
+
 def save_validation_images(train_dataloader, accelerator, num_validaton_images):
     saved_imgs = 0
     print("Uploading groud truth images")
     for step, batch in enumerate(train_dataloader):
-        if saved_imgs > (num_validaton_images - 1): break
+        if saved_imgs > (num_validaton_images - 1):
+            break
         print(f"Uploading groud truth images {saved_imgs}")
         img_tensor = batch['pixel_values'][0][0]
         original_episode = torch.stack(batch['original_episode'])
         validation_original_frames.append(len(original_episode))
-        original_video = original_episode.squeeze(1).permute(0,3,1,2).cpu().detach().numpy()
+        original_video = original_episode.squeeze(
+            1).permute(0, 3, 1, 2).cpu().detach().numpy()
         # original_video = torch.stack(original_episode, dim=0).squeeze(1).permute(0,3,1,2).cpu().detach().numpy()
-        video_array_resized = np.zeros((*original_video.shape[:2], 128, 128)) # 320, 512
+        video_array_resized = np.zeros(
+            (*original_video.shape[:2], 128, 128))  # 320, 512
         for i in range(original_video.shape[0]):
             for j in range(3):
-                video_array_resized[i,j] = cv2.resize(original_video[i, j], (128, 128)) # (512, 320))
+                video_array_resized[i, j] = cv2.resize(
+                    original_video[i, j], (128, 128))  # (512, 320))
 
         original_videos.append(video_array_resized)
         # Normalize the tensor values from [-1, 1] to [0, 1]
@@ -609,25 +619,37 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
 
         # Convert the NumPy array to a PIL Image
         image = Image.fromarray(array)
-        # Appending the first image in the original video instead of the current video first image 
-        validation_images_pil.append(Image.fromarray(np.transpose(video_array_resized[0], (1, 2, 0)).astype('uint8')))
+        # Appending the first image in the original video instead of the current video first image
+        validation_images_pil.append(Image.fromarray(np.transpose(
+            video_array_resized[0], (1, 2, 0)).astype('uint8')))
         video_tensor = batch['pixel_values'][0]
         # Normalize the tensor values from [-1, 1] to [0, 1]
         normalized_tensor = (video_tensor + 1) / 2
         gt_videos.append(normalized_tensor)
-        
+
         # Convert the normalized tensor to the range [0, 255]
         array = (normalized_tensor * 255).byte().numpy()
         val_texts.append(batch['task_text'][0])
         # accelerator.log({f"step_val_img_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
         # accelerator.log({f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(array, fps=4)},step=0)
-        accelerator.log({f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(video_array_resized, fps=4)},step=0)
+        accelerator.log(
+            {f"{batch['task_text'][0]}_{saved_imgs}/gt": wandb.Video(video_array_resized, fps=4)}, step=0)
         saved_imgs += 1
 
+
 def save_img_from_tensor(normalized_tensor, image_name):
+    # Normalize the tensor
+    min_val = normalized_tensor.min()
+    max_val = normalized_tensor.max()
+
+    # Normalize the tensor to the range [-1, 1]
+    normalized_tensor = 2 * \
+        ((normalized_tensor - min_val) / (max_val - min_val)) - 1
+
     # Normalize the tensor to the range [0, 255]
     normalized_tensor = (normalized_tensor + 1) * 127.5
-    normalized_tensor = normalized_tensor.clamp(0, 255)  # Ensure values are within [0, 255]
+    normalized_tensor = normalized_tensor.clamp(
+        0, 255)  # Ensure values are within [0, 255]
 
     # Convert to uint8
     image_tensor = normalized_tensor.byte()
@@ -636,9 +658,27 @@ def save_img_from_tensor(normalized_tensor, image_name):
     image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # (320, 512, 3)
 
     image_np = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-    
+
     # Save the image using cv2
     cv2.imwrite(f'{image_name}.png', image_np)
+
+
+def convert_tensor_to_video(video_tensor):
+    # Normalize the tensor
+    min_val = video_tensor.min()
+    max_val = video_tensor.max()
+
+    # Normalize the video_tensor to the range [-1, 1]
+    normalized_video_tensor = 2 * \
+        ((video_tensor - min_val) / (max_val - min_val)) - 1
+
+    # Normalize the tensor to the range [0, 255]
+    normalized_video_tensor = (normalized_video_tensor + 1) * 127.5
+    normalized_video_tensor = normalized_video_tensor.clamp(
+        0, 255)  # Ensure values are within [0, 255]
+
+    return normalized_video_tensor
+
 
 def main():
     args = parse_args()
@@ -655,7 +695,7 @@ def main():
     accelerator_project_config = ProjectConfiguration(
         project_dir=args.output_dir, logging_dir=logging_dir)
     # ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    # breakpoint()
+
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision=args.mixed_precision,
@@ -663,15 +703,16 @@ def main():
         project_config=accelerator_project_config,
         # kwargs_handlers=[ddp_kwargs]
     )
-    
+
     root_dir = Path("/storage/nvme/results")
     Path(root_dir / "wandb").mkdir(exist_ok=True)
     timestr = time.strftime("%Y%m%d-%H%M%S")
-    
+
     accelerator.init_trackers(
         project_name="svd_language_test",
         # config={"dropout": 0.1, "learning_rate": 1e-2}
-        init_kwargs={"wandb": {"dir": root_dir, "id" : timestr, "name" : "svd_lang_shape_dataset"}}
+        init_kwargs={"wandb": {"dir": root_dir,
+                               "id": timestr, "name": "svd_lang_shape_dataset"}}
     )
 
     generator = torch.Generator(
@@ -720,6 +761,18 @@ def main():
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="image_encoder", revision=args.revision, variant="fp16"
     )
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        "stabilityai/stable-diffusion-2-1", subfolder="tokenizer", revision=args.revision, variant="fp16"
+    )
+
+    text_encoder = CLIPTextModelWithProjection.from_pretrained(
+        "stabilityai/stable-diffusion-2-1", subfolder="text_encoder", revision=args.revision, variant="fp16"
+    )
+    # inputs = tokenizer(["a photo of a cat", "a photo of a dog"],
+    #                    padding=True, return_tensors="pt")
+    # outputs = text_encoder(**inputs)
+
     vae = AutoencoderKLTemporalDecoder.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="vae", revision=args.revision, variant="fp16")
     unet = UNetSpatioTemporalConditionModel.from_pretrained(
@@ -732,6 +785,7 @@ def main():
     # Freeze vae and image_encoder
     vae.requires_grad_(False)
     image_encoder.requires_grad_(False)
+    text_encoder.requires_grad_(False)
     unet.requires_grad_(False)
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -744,6 +798,7 @@ def main():
 
     # Move image_encoder and vae to gpu and cast to weight_dtype
     image_encoder.to(accelerator.device, dtype=weight_dtype)
+    text_encoder.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     # unet.to(accelerator.device, dtype=weight_dtype)
 
@@ -871,18 +926,18 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_data = ShapeDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    train_data = ShapeDataset(
+        width=args.width, height=args.height, sample_frames=args.num_frames)
     # train_dataset, test_dataset = torch.utils.data.random_split(train_data, [0.9, 0.1])
-    
+
     sampler = RandomSampler(train_data)
     train_dataloader = torch.utils.data.DataLoader(
         train_data,
         sampler=sampler,
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
-        multiprocessing_context='spawn'
     )
-    
+
     # test_sampler = RandomSampler(test_dataset)
     # test_dataloader = torch.utils.data.DataLoader(
     #     test_dataset,
@@ -892,9 +947,10 @@ def main():
     #     multiprocessing_context='spawn'
     # )
     # train_dataloader.dataset.sample_validation = True
-    save_validation_images(train_dataloader, accelerator, args.num_validation_images)
+    save_validation_images(train_dataloader, accelerator,
+                           args.num_validation_images)
     # train_dataloader.dataset.sample_validation = False
-    
+
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(
@@ -950,6 +1006,7 @@ def main():
     first_epoch = 0
 
     def encode_image(pixel_values):
+        # save_img_from_tensor(pixel_values.squeeze(0), "pixel_values")
         # pixel: [-1, 1]
         pixel_values = _resize_with_antialiasing(pixel_values, (224, 224))
         # We unnormalize it after resizing.
@@ -968,7 +1025,43 @@ def main():
         pixel_values = pixel_values.to(
             device=accelerator.device, dtype=weight_dtype)
         image_embeddings = image_encoder(pixel_values).image_embeds
+
         return image_embeddings
+
+    def encode_image_and_text(pixel_values, task_text):
+        # save_img_from_tensor(pixel_values.squeeze(0), "pixel_values")
+        # pixel: [-1, 1]
+        pixel_values = _resize_with_antialiasing(pixel_values, (224, 224))
+        # We unnormalize it after resizing.
+        pixel_values = (pixel_values + 1.0) / 2.0
+
+        # Normalize the image with for CLIP input
+        pixel_values = feature_extractor(
+            images=pixel_values,
+            do_normalize=True,
+            do_center_crop=False,
+            do_resize=False,
+            do_rescale=False,
+            return_tensors="pt",
+        ).pixel_values
+
+        pixel_values = pixel_values.to(
+            device=accelerator.device, dtype=weight_dtype)
+        image_embeddings = image_encoder(pixel_values).image_embeds
+
+        # text_encoder = CLIPTextModelWithProjection.from_pretrained(
+        #     "stabilityai/stable-diffusion-2-1", subfolder="text_encoder", variant="fp16")
+        # tokenizer = AutoTokenizer.from_pretrained(
+        #     "stabilityai/sable-diffusion-2-1", subfolder="tokenizer", revision=args.revision, variant="fp16")
+        inputs = tokenizer(task_text, padding=True, return_tensors="pt").to(
+            device=accelerator.device)
+        outputs = text_encoder(**inputs).last_hidden_state.to(
+            device=accelerator.device, dtype=weight_dtype)
+        # image_text_embeds = outputs
+        image_text_embeds = torch.cat(
+            (outputs, image_embeddings.unsqueeze(1)), dim=1)
+
+        return image_text_embeds
 
     def _get_add_time_ids(
         fps,
@@ -1035,41 +1128,45 @@ def main():
 
             with accelerator.accumulate(unet):
                 # first, convert images to latent space.
-                
+
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
                 # save_img_from_tensor(pixel_values[:, 0:1, :, :, :].squeeze(0).squeeze(0).cpu(), "first_frame")
-                
+
                 conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
                 # single_latent = latents[:, 0:1, 0:1, :, :]
                 # save_img_from_tensor(latents[:, 0:1, 0:1, :, :].squeeze(0).squeeze(0).repeat(3,1,1).cpu(), "latents")
-                
+
                 # save_img_from_tensor(conditional_pixel_values[0,0], "img0")
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
                 bsz = latents.shape[0]
 
-                cond_sigmas = rand_log_normal(shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
-                noise_aug_strength = cond_sigmas[0] # TODO: support batch > 1
+                cond_sigmas = rand_log_normal(
+                    shape=[bsz,], loc=-3.0, scale=0.5).to(latents)
+                noise_aug_strength = cond_sigmas[0]  # TODO: support batch > 1
                 cond_sigmas = cond_sigmas[:, None, None, None, None]
                 conditional_pixel_values = \
-                    torch.randn_like(conditional_pixel_values) * cond_sigmas + conditional_pixel_values
+                    torch.randn_like(conditional_pixel_values) * \
+                    cond_sigmas + conditional_pixel_values
                 # save_img_from_tensor(conditional_pixel_values.squeeze(0).squeeze(0).cpu(), 'noised_pixels')
-                conditional_latents = tensor_to_vae_latent(conditional_pixel_values, vae)[:, 0, :, :, :]
+                conditional_latents = tensor_to_vae_latent(
+                    conditional_pixel_values, vae)[:, 0, :, :, :]
                 # save_img_from_tensor(conditional_latents.squeeze(0).cpu(), 'conditional_latents')
-                
+
                 conditional_latents = conditional_latents / vae.config.scaling_factor
 
                 # Sample a random timestep for each image
                 # P_mean=0.7 P_std=1.6
-                sigmas = rand_log_normal(shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
+                sigmas = rand_log_normal(
+                    shape=[bsz,], loc=0.7, scale=1.6).to(latents.device)
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 sigmas = sigmas[:, None, None, None, None]
-                noisy_latents = latents + noise * sigmas
+                noisy_latents = noise
                 timesteps = torch.Tensor(
                     [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
 
@@ -1079,13 +1176,16 @@ def main():
                 encoder_hidden_states = encode_image(
                     pixel_values[:, 0, :, :, :].float())
 
+                encoder_hidden_states = encode_image_and_text(
+                    pixel_values[:, 0, :, :, :].float(), batch["task_text"])
+
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
                 # so I adopted this approach. The same applies to the 'fps' (frames per second).
                 added_time_ids = _get_add_time_ids(
-                    7, # fixed
-                    127, # motion_bucket_id = 127, fixed  # This&That says 200 is better 
-                    noise_aug_strength, # noise_aug_strength == cond_sigmas
+                    7,  # fixed
+                    127,  # motion_bucket_id = 127, fixed  # This&That says 200 is better
+                    noise_aug_strength,  # noise_aug_strength == cond_sigmas
                     encoder_hidden_states.dtype,
                     bsz,
                 )
@@ -1093,46 +1193,131 @@ def main():
 
                 # Conditioning dropout to support classifier-free guidance during inference. For more details
                 # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
-                if args.conditioning_dropout_prob is not None:
-                    random_p = torch.rand(
-                        bsz, device=latents.device, generator=generator)
-                    # Sample masks for the edit prompts.
-                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
-                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
-                    # Final text conditioning.
-                    null_conditioning = torch.zeros_like(encoder_hidden_states)
-                    encoder_hidden_states = torch.where(
-                        prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
-                    # Sample masks for the original images.
-                    image_mask_dtype = conditional_latents.dtype
-                    image_mask = 1 - (
-                        (random_p >= args.conditioning_dropout_prob).to(
-                            image_mask_dtype)
-                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
-                    )
-                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
-                    # Final image conditioning.
-                    conditional_latents = image_mask * conditional_latents
+                # breakpoint()
+
+                # if args.conditioning_dropout_prob is not None:
+                #     random_p = torch.rand(
+                #         bsz, device=latents.device, generator=generator)
+                #     # Sample masks for the edit prompts.
+                #     prompt_mask = random_p < 2 * args.conditioning_dropout_prob
+                #     prompt_mask = prompt_mask.reshape(bsz, 1, 1)
+
+                #     # Final text conditioning. - Fix this to have the conditioning all the times.
+                #     null_conditioning = torch.zeros_like(encoder_hidden_states)
+                #     encoder_hidden_states = torch.where(
+                #         prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
+                #     # Sample masks for the original images.
+                #     image_mask_dtype = conditional_latents.dtype
+                #     image_mask = 1 - (
+                #         (random_p >= args.conditioning_dropout_prob).to(
+                #             image_mask_dtype)
+                #         * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+                #     )
+                #     image_mask = image_mask.reshape(bsz, 1, 1, 1)
+                #     # Final image conditioning.
+                #     conditional_latents = image_mask * conditional_latents
+                encoder_hidden_states = encoder_hidden_states.unsqueeze(0)
 
                 # conditional_latents_3 = conditional_latents[:,2,:].unsqueeze(1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
                 # conditional_latents = conditional_latents_1 + conditional_latents_2 + conditional_latents_3
                 # Concatenate the `conditional_latents` with the `noisy_latents`.
                 conditional_latents = conditional_latents.unsqueeze(
                     1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
+
+                # inp_noisy_latents_video = inp_noisy_latents[0, :, 0:3].cpu(
+                # ).detach().numpy()
+                # accelerator.log({f"training_pred_video_latents_{global_step}": wandb.Video(
+                #     video_latents, fps=4)}, step=global_step)
+                # converted_vid_tensor = convert_tensor_to_video(
+                #     inp_noisy_latents)
+
+                # normalized_video_tensor1 = converted_vid_tensor[0, :, 0:1].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+                # normalized_video_tensor2 = converted_vid_tensor[0, :, 1:2].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+                # normalized_video_tensor3 = converted_vid_tensor[0, :, 2:3].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+                # normalized_video_tensor4 = converted_vid_tensor[0, :, 3:4].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+
+                # accelerator.log({f"inp_noisy_latents_1_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     normalized_video_tensor1, fps=4)}, step=global_step)
+
+                # accelerator.log({f"inp_noisy_latents_2_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     normalized_video_tensor2, fps=4)}, step=global_step)
+
+                # accelerator.log({f"inp_noisy_latents_3_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     normalized_video_tensor3, fps=4)}, step=global_step)
+
+                # accelerator.log({f"inp_noisy_latents_4_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     normalized_video_tensor4, fps=4)}, step=global_step)
+
                 inp_noisy_latents = torch.cat(
                     [inp_noisy_latents, conditional_latents], dim=2)
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                
-                model_pred = unet(
-                    inp_noisy_latents, timesteps, encoder_hidden_states, added_time_ids=added_time_ids).sample
+                # for i in range(5):
+                #     for j in range(8):
+                #         save_img_from_tensor(
+                #             inp_noisy_latents[0][i*5][j:j+1], f"inp_noisy_{i}_{j}")
+                # for i in range(5):
+                #     for j in range(4):
+                #         save_img_from_tensor(
+                #             target[0][i*5][j:j+1], f"target_{i}_{j}")
+
+                encoder_hidden_states = encoder_hidden_states.squeeze(0)
+                model_pred = unet(inp_noisy_latents, timesteps,
+                                  encoder_hidden_states, added_time_ids=added_time_ids).sample
+
+                if encoder_hidden_states.count_nonzero() == 0:
+                    no_conditioning = 1
+                else:
+                    no_conditioning = 0
+                accelerator.log(
+                    {f"no_conditioning": no_conditioning}, step=global_step)
 
                 # Denoise the latents
                 c_out = -sigmas / ((sigmas**2 + 1)**0.5)
                 c_skip = 1 / (sigmas**2 + 1)
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
                 weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
+
+                converted_denoised_vid_tensor = convert_tensor_to_video(
+                    denoised_latents)
+
+                # denoised_video_latents1 = converted_denoised_vid_tensor[0, :, 0:1].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+                # denoised_video_latents2 = converted_denoised_vid_tensor[0, :, 1:2].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+                # denoised_video_latents3 = converted_denoised_vid_tensor[0, :, 2:3].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+                # denoised_video_latents4 = converted_denoised_vid_tensor[0, :, 3:4].repeat(1, 3, 1, 1).cpu(
+                # ).detach().numpy()
+
+                # video_latents = denoised_latents[0,
+                #                                  :, 0:3].cpu().detach().numpy()
+                # # accelerator.log({f"training_pred_video_latents_{global_step}": wandb.Video(
+                # #     video_latents, fps=4)}, step=global_step)
+                # accelerator.log({f"denoised_latents_1_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     video_latents, fps=4)}, step=global_step)
+                # accelerator.log({f"denoised_latents_2_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     video_latents, fps=4)}, step=global_step)
+                # accelerator.log({f"denoised_latents_3_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     video_latents, fps=4)}, step=global_step)
+                # accelerator.log({f"denoised_latents_4_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
+                #     video_latents, fps=4)}, step=global_step)
+                # for i in range(5):
+                #     for j in range(4):
+                #         save_img_from_tensor(
+                #             target[0][i*5][j:j+1], f"target_{i}_{j}")
+
+                # for i in range(5):
+                #     for j in range(4):
+                #         save_img_from_tensor(
+                #             denoised_latents[0][i*5][j:j+1], f"denoised_latents_{i}_{j}")
+                # print(batch["task_text"])
+                # print(encoder_hidden_states)
 
                 # MSE loss
                 loss = torch.mean(
@@ -1197,9 +1382,10 @@ def main():
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
                     # sample images!
+
                     if (
                         (global_step % args.validation_steps == 0)
-                        or (global_step == 1)
+                        or (global_step == 2001)
                     ):
                         logger.info(
                             f"Running validation... \n Generating {args.num_validation_images} videos."
@@ -1216,8 +1402,11 @@ def main():
                             image_encoder=accelerator.unwrap_model(
                                 image_encoder),
                             vae=accelerator.unwrap_model(vae),
+                            tokenizer=tokenizer,
+                            text_encoder=accelerator.unwrap_model(
+                                text_encoder),
                             revision=args.revision,
-                            torch_dtype=weight_dtype,
+                            torch_dtype=weight_dtype
                         )
                         pipeline = pipeline.to(accelerator.device)
                         pipeline.set_progress_bar_config(disable=True)
@@ -1238,7 +1427,7 @@ def main():
                             test_psnr = []
                             for val_img_idx in range(args.num_validation_images):
                                 num_frames = args.num_frames
-                                
+
                                 num_pred_frames = validation_original_frames[val_img_idx]
                                 print(f"Num_pred_frames : {num_pred_frames}")
                                 gt_image = validation_images_pil[val_img_idx]
@@ -1246,14 +1435,18 @@ def main():
                                 for i in range(math.ceil(num_pred_frames/num_frames)):
                                     video_frames = pipeline(
                                         # load_image(val_images[val_img_idx]).resize((args.width, args.height)),
-                                        gt_image.resize((args.width, args.height)),
+                                        gt_image.resize(
+                                            (args.width, args.height)),
                                         height=args.height,
                                         width=args.width,
                                         num_frames=num_frames,
-                                        decode_chunk_size=8, #increase for temporal consistency at expense of memory usage
+                                        decode_chunk_size=8,  # increase for temporal consistency at expense of memory usage
                                         motion_bucket_id=127,
                                         fps=7,
                                         noise_aug_strength=0.02,
+                                        task_text=val_texts[val_img_idx],
+                                        min_guidance_scale=1.0,
+                                        max_guidance_scale=1.0
                                         # generator=generator,
                                     ).frames[0]
                                     all_frames.extend(video_frames)
@@ -1264,57 +1457,62 @@ def main():
                                     val_save_dir,
                                     f"step_{global_step}_val_img_{val_img_idx}.mp4",
                                 )
-                                
+
                                 final_video = []
                                 for i in range(num_pred_frames):
                                     img = all_frames[i]
                                     final_video.append(np.array(img))
-                                    
-                                pred_video_all = np.array(final_video).transpose(0, 3, 1, 2)
-                                
+
+                                pred_video_all = np.array(
+                                    final_video).transpose(0, 3, 1, 2)
+
                                 # for i in range(num_frames):
                                 #     img = video_frames[i]
                                 #     video_frames[i] = np.array(img)
                                 # pred_video = np.array(video_frames).transpose(0, 3, 1, 2)
-                                
+
                                 # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
 
                                 # accelerator.log({f"step_val_img_{val_img_idx}/pred": wandb.Video(pred_video, fps=4)}, step=global_step)
 
                                 # Compute only over the generated part
                                 # gtt = gt_videos[val_img_idx].unsqueeze(0).to(pipeline.device)[:,1:,:]
-                                gtt = torch.from_numpy(original_videos[val_img_idx]/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
-                                
-                                predt = torch.from_numpy(pred_video_all/ 255.0).unsqueeze(0).to(pipeline.device)[:,1:,:]
+                                gtt = torch.from_numpy(
+                                    original_videos[val_img_idx] / 255.0).unsqueeze(0).to(pipeline.device)[:, 1:, :]
+
+                                predt = torch.from_numpy(
+                                    pred_video_all / 255.0).unsqueeze(0).to(pipeline.device)[:, 1:, :]
                                 predt = predt.to(gtt.dtype)
-                                
+
                                 # Compute metrics
                                 fvd = metrics.FVD(device=pipeline.device)
                                 ssim = metrics.get_ssim()
                                 psnr = metrics.get_psnr()
-                                lpips = metrics.get_lpips(device=pipeline.device)
-                                # breakpoint()
+                                lpips = metrics.get_lpips(
+                                    device=pipeline.device)
+
                                 test_ssim_val = ssim(predt, gtt)[0]
-                                # breakpoint()
+
                                 # test_lpips_val = lpips(predt, gtt)[0]
                                 # test_psnr_val = psnr(predt, gtt)[0]
                                 test_ssim.append(test_ssim_val)
                                 # test_lpips.append(test_lpips_val)
                                 # test_psnr.append(test_psnr_val)
-                                
+
                                 # metrics_str = f"ssim_{test_ssim_val:.2f}_psnr_{test_psnr_val:.2f}_lpips_{test_lpips_val:.2f}"
-                                
+
                                 # accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred_{metrics_str}_{global_step}": wandb.Video(pred_video_all, fps=4)}, step=global_step)
-                                
-                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(pred_video_all, fps=4)}, step=global_step)
+
+                                accelerator.log({f"{val_texts[val_img_idx]}_{val_img_idx}/pred": wandb.Video(
+                                    pred_video_all, fps=4)}, step=global_step)
                                 # accelerator.log({f"step_val_img_{val_img_idx}/pred_{metrics_str}": wandb.Video(pred_video, fps=4)}, step=global_step)
-        
+
                                 export_to_gif(video_frames, out_file, 8)
                             test_ssim = torch.mean(torch.stack(test_ssim))
                             # test_lpips = torch.mean(torch.stack(test_lpips))
                             # test_psnr = torch.mean(torch.stack(test_psnr))
                             accelerator.log({f"test_ssim": test_ssim,
-                                                }, step=global_step)
+                                             }, step=global_step)
 
                         if args.use_ema:
                             # Switch back to the original UNet parameters.

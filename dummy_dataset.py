@@ -4,12 +4,13 @@ import cv2
 from pathlib import Path
 import torch
 import random
-import glob 
+import glob
 from tqdm import tqdm
 import os
 import time
 from PIL import Image
 # from vqgan_dataloader import vqganDataloader
+
 
 class DummyDataset(Dataset):
     def __init__(self, num_samples=1000, width=1024, height=576, sample_frames=15):
@@ -25,7 +26,7 @@ class DummyDataset(Dataset):
         self.width = width
         self.height = height
         self.sample_frames = sample_frames
-        
+
         self._load_video_paths()
 
     def _load_video_paths(self):
@@ -39,7 +40,8 @@ class DummyDataset(Dataset):
         hsv = np.zeros_like(image2)
         hsv[..., 1] = 255
         image2 = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(prvs, image2, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        flow = cv2.calcOpticalFlowFarneback(
+            prvs, image2, None, 0.5, 3, 15, 3, 5, 1.2, 0)
         mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
         magnitude = np.linalg.norm(mag) / (np.prod(mag.shape) / 10000)
         return magnitude
@@ -49,7 +51,8 @@ class DummyDataset(Dataset):
         for idx in range(video.shape[0]-1):
             current_img = video[idx]
             next_img = video[idx+1]
-            magnitude = self.calculate_flow_between_frames(current_img, next_img)
+            magnitude = self.calculate_flow_between_frames(
+                current_img, next_img)
             magnitudes.append(magnitude)
         return magnitudes
 
@@ -62,23 +65,25 @@ class DummyDataset(Dataset):
             current_img = video[idx]
             while idx < (video.shape[0]-2):
                 next_img = video[idx+1]
-                magnitude = self.calculate_flow_between_frames(current_img, next_img)
-                if(magnitude>flow_threshold):
+                magnitude = self.calculate_flow_between_frames(
+                    current_img, next_img)
+                if (magnitude > flow_threshold):
                     trimmed_video.append(next_img)
                     idx += 1
                     break
                 else:
                     skipped_frames += 1
                     idx += 1
-            if(idx==(video.shape[0]-2)):
+            if (idx == (video.shape[0]-2)):
                 break
-                
+
         if len(trimmed_video) < num_frames:
-            print(f"Did not find {num_frames} frames, only found {len(trimmed_video)} frames :( !!")
+            print(
+                f"Did not find {num_frames} frames, only found {len(trimmed_video)} frames :( !!")
             return None, -1
-        
+
         trimmed_video = np.array(trimmed_video)
-        
+
         return trimmed_video, skipped_frames
 
     def __len__(self):
@@ -103,7 +108,8 @@ class DummyDataset(Dataset):
             image_key = "images/" + image_key
             lang_dir = chosen_dataset / "data" / "language_instruction"
             video_npz = sorted(image_dir.glob('*.npz'))
-            episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
+            episodes = np.load(random.choice(video_npz),
+                               allow_pickle=True)[image_key]
 
             # Randomly select an episode from episodes
             episode = episodes[np.random.randint(episodes.shape[0])]
@@ -132,12 +138,13 @@ class DummyDataset(Dataset):
             #         continue
             #     else:
             #         found_episode = True
-            
-            if len(episode)>self.sample_frames:
+
+            if len(episode) > self.sample_frames:
                 found_episode = True
             else:
-                print(f"Finding new episode, Length of current episode : {len(episode)}")
-        
+                print(
+                    f"Finding new episode, Length of current episode : {len(episode)}")
+
         # folder_path = chosen_dataset
         # frames = os.listdir(folder_path)
         # # Sort the frames by name
@@ -154,17 +161,19 @@ class DummyDataset(Dataset):
         # selected_frames = frames[start_idx:start_idx + self.sample_frames]
 
         # Initialize a tensor to store the pixel values
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
+            if i > (self.sample_frames-1):
+                break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
-            
+
             # img_resized = np.resize(frame, (self.height, self.width, 3))
             img_tensor = torch.from_numpy(img_resized).float()
-            
+
             # Normalize the image by scaling pixel values to [-1, 1]
             img_normalized = img_tensor / 127.5 - 1
 
@@ -177,11 +186,11 @@ class DummyDataset(Dataset):
                     dim=2, keepdim=True)  # For grayscale images
 
             pixel_values[i] = img_normalized
-        return {'pixel_values': pixel_values}
+        return {'pixel_values': pixel_values, 'original_episode': episode, "task_text": "robot doing a task"}
 
 
 class RTXDataset(Dataset):
-    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25, original_fps = True):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25, original_fps=True):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -194,7 +203,7 @@ class RTXDataset(Dataset):
         self.width = width
         self.height = height
         self.sample_frames = sample_frames
-        
+
         self._load_video_paths()
 
     def _load_video_paths(self):
@@ -212,13 +221,14 @@ class RTXDataset(Dataset):
         image_key = "images/" + image_key
         lang_dir = chosen_dataset / "data" / "language_instruction"
         video_npz = sorted(image_dir.glob('*.npz'))
-        episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
+        episodes = np.load(random.choice(video_npz),
+                           allow_pickle=True)[image_key]
 
         # Randomly select an episode from episodes
         episode = episodes[np.random.randint(episodes.shape[0])]
         # episode.shape : (430, 224, 224, 3)
         # episode.dtype : dtype('uint8')
-                    
+
     def __len__(self):
         return self.num_samples
 
@@ -241,16 +251,18 @@ class RTXDataset(Dataset):
             image_key = "images/" + image_key
             lang_dir = chosen_dataset / "data" / "language_instruction"
             video_npz = sorted(image_dir.glob('*.npz'))
-            episodes = np.load(random.choice(video_npz), allow_pickle=True)[image_key]
+            episodes = np.load(random.choice(video_npz),
+                               allow_pickle=True)[image_key]
 
             # Randomly select an episode from episodes
             episode = episodes[np.random.randint(episodes.shape[0])]
 
-            if len(episode)>self.sample_frames:
+            if len(episode) > self.sample_frames:
                 found_episode = True
             else:
-                print(f"Finding new episode, Length of current episode : {len(episode)}")
-        
+                print(
+                    f"Finding new episode, Length of current episode : {len(episode)}")
+
         # Randomly select a start index for frame sequence
         start_idx = random.randint(0, episode.shape[0] - self.sample_frames)
         start_idx = 0
@@ -258,17 +270,19 @@ class RTXDataset(Dataset):
         episode = episode[start_idx:start_idx + self.sample_frames]
 
         # Initialize a tensor to store the pixel values
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
+            if i > (self.sample_frames-1):
+                break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
-            
+
             # img_resized = np.resize(frame, (self.height, self.width, 3))
             img_tensor = torch.from_numpy(img_resized).float()
-            
+
             # Normalize the image by scaling pixel values to [-1, 1]
             img_normalized = img_tensor / 127.5 - 1
 
@@ -281,12 +295,13 @@ class RTXDataset(Dataset):
                     dim=2, keepdim=True)  # For grayscale images
 
             pixel_values[i] = img_normalized
-        
+
         task = "robot doing a task"
-        return {'pixel_values': pixel_values, "task_text" : task, "original_episode": original_episode}
+        return {'pixel_values': pixel_values, "task_text": task, "original_episode": original_episode}
+
 
 class RTXHeliosTrainTestSplitDataset(Dataset):
-    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25, original_fps = True):
+    def __init__(self, num_samples=100000, width=1024, height=576, sample_frames=25, original_fps=True):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -300,16 +315,16 @@ class RTXHeliosTrainTestSplitDataset(Dataset):
         self.sample_frames = sample_frames
         self.current_idx = 0
         train_path = "/workspaces/bdai/train/dataset_splits/rtx_enc_emb_train_len100_frac25_npz.txt"
-        self.train_dataset_sequences = open(train_path,"r").readlines()
+        self.train_dataset_sequences = open(train_path, "r").readlines()
     #     self._load_video()
-        
+
     # def _load_video(self):
     #     chosen_sequence = self.train_dataset_sequences[self.current_idx]
     #     filepath, start_idx = chosen_sequence.strip().split(",")
     #     video_filepath = filepath.replace("nvme/rtx_enc_emb", "nfs/jpatel/rtx_enc_emb")
     #     data = np.load(video_filepath,allow_pickle=True)
     #     episode = data["video"][int(start_idx):]
-    
+
     def __len__(self):
         return self.num_samples
 
@@ -328,14 +343,16 @@ class RTXHeliosTrainTestSplitDataset(Dataset):
             print(f"Chose {self.current_idx} : {chosen_sequence}")
             self.current_idx += 1
             filepath, start_idx = chosen_sequence.strip().split(",")
-            video_filepath = filepath.replace("nvme/rtx_enc_emb", "nfs/jpatel/rtx_enc_emb")
-            data = np.load(video_filepath,allow_pickle=True)
+            video_filepath = filepath.replace(
+                "nvme/rtx_enc_emb", "nfs/jpatel/rtx_enc_emb")
+            data = np.load(video_filepath, allow_pickle=True)
             episode = data["video"]
             print(f"Episode : {episode.shape}")
-            if len(episode)>self.sample_frames:
+            if len(episode) > self.sample_frames:
                 found_episode = True
             else:
-                print(f"Finding new episode, Length of current episode : {len(episode)}")
+                print(
+                    f"Finding new episode, Length of current episode : {len(episode)}")
 
         # Randomly select a start index for frame sequence
         start_idx = random.randint(0, episode.shape[0] - self.sample_frames)
@@ -344,17 +361,19 @@ class RTXHeliosTrainTestSplitDataset(Dataset):
         episode = episode[start_idx:start_idx + self.sample_frames]
 
         # Initialize a tensor to store the pixel values
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
+            if i > (self.sample_frames-1):
+                break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
-            
+
             # img_resized = np.resize(frame, (self.height, self.width, 3))
             img_tensor = torch.from_numpy(img_resized).float()
-            
+
             # Normalize the image by scaling pixel values to [-1, 1]
             img_normalized = img_tensor / 127.5 - 1
 
@@ -367,11 +386,11 @@ class RTXHeliosTrainTestSplitDataset(Dataset):
                     dim=2, keepdim=True)  # For grayscale images
 
             pixel_values[i] = img_normalized
-        
+
         task = "robot doing a task"
-        return {'pixel_values': pixel_values, "task_text" : task, "original_episode": original_episode}
-    
-    
+        return {'pixel_values': pixel_values, "task_text": task, "original_episode": original_episode}
+
+
 class BDAIDataset(Dataset):
     def __init__(self, num_samples=172, width=1024, height=576, sample_frames=25):
         """
@@ -385,7 +404,8 @@ class BDAIDataset(Dataset):
         self.height = height
         self.sample_frames = sample_frames
         # sequence_dirs = glob.glob(os.path.join("/storage/nfs/bdai_download_local", "**/out.npy"), recursive=True)
-        sequence_dirs = glob.glob(os.path.join("/storage/nfs/bdai_download_local/bridge_bdai_no_berkeley_numpy/new_datasets/bdai/stacking_cups_logitech/", "**/out.npy"), recursive=True)
+        sequence_dirs = glob.glob(os.path.join(
+            "/storage/nfs/bdai_download_local/bridge_bdai_no_berkeley_numpy/new_datasets/bdai/stacking_cups_logitech/", "**/out.npy"), recursive=True)
         # stacking_cups_logitech
         self.sequences = []
         self.tasks = []
@@ -400,7 +420,7 @@ class BDAIDataset(Dataset):
             else:
                 tasks.extend(task)
                 obss.extend(obs)
-            
+
         self.sequences = obss
         self.tasks = tasks
         self.val_sequences = val_obss
@@ -412,36 +432,38 @@ class BDAIDataset(Dataset):
         print("Done")
         # self.get_video(5)
         # breakpoint()
-        
+
     def __len__(self):
         return self.num_samples
-    
-    def get_video(self,idx):
+
+    def get_video(self, idx):
         print(f"idx : {idx}")
         if self.sample_validation:
-            idx = random.randrange(0,len(self.val_sequences))
+            idx = random.randrange(0, len(self.val_sequences))
             samples = self.val_sequences[idx]
             task = self.val_tasks[idx]
         else:
-            idx = random.randrange(0,len(self.sequences))
+            idx = random.randrange(0, len(self.sequences))
             samples = self.sequences[idx]
             task = self.tasks[idx]
 
-        episode = [s for s in samples] # List of images where each image is (128,128,3) and np.uint8
-    
+        # List of images where each image is (128,128,3) and np.uint8
+        episode = [s for s in samples]
+
     def get_samples(self, seq):
         N = len(seq)
-        ### uniformly sample {self.sample_per_seq} frames, including the first and last frame
+        # uniformly sample {self.sample_per_seq} frames, including the first and last frame
         samples = []
         for i in range(self.sample_per_seq-1):
             samples.append(int(i*(N-1)/(self.sample_per_seq-1)))
         samples.append(N-1)
         return [seq[i] for i in samples]
-    
+
     def extract_seq(self, seqs_path):
         seqs = np.load(seqs_path, allow_pickle=True)
         extract_language_from_npy = "language" in seqs[0].keys()
-        task = [] if extract_language_from_npy else seqs_path.split('/')[-3].replace('_', ' ')
+        task = [] if extract_language_from_npy else seqs_path.split(
+            '/')[-3].replace('_', ' ')
         outputs = []
 
         for seq in seqs:
@@ -454,14 +476,14 @@ class BDAIDataset(Dataset):
                 sampled_obs = self.get_samples(full_obs)
                 outputs.append(sampled_obs)
                 if extract_language_from_npy:
-                    if seq['language'][0]=="":
+                    if seq['language'][0] == "":
                         task.append("Robot doing a task")
                     else:
                         task.append(seq['language'][0])
         tasks = task if extract_language_from_npy else [task] * len(outputs)
 
         return outputs, tasks
-    
+
     def __getitem__(self, idx):
         """
         Args:
@@ -472,27 +494,29 @@ class BDAIDataset(Dataset):
         """
         # Randomly select a dataset
         if self.sample_validation:
-            idx = random.randrange(0,len(self.val_sequences))
+            idx = random.randrange(0, len(self.val_sequences))
             samples = self.val_sequences[idx]
             task = self.val_tasks[idx]
         else:
-            idx = random.randrange(0,len(self.sequences))
+            idx = random.randrange(0, len(self.sequences))
             samples = self.sequences[idx]
             task = self.tasks[idx]
 
         episode = [s for s in samples]
-        
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
+            if i > (self.sample_frames-1):
+                break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
-            
+
             # img_resized = np.resize(frame, (self.height, self.width, 3))
             img_tensor = torch.from_numpy(img_resized).float()
-            
+
             # Normalize the image by scaling pixel values to [-1, 1]
             img_normalized = img_tensor / 127.5 - 1
 
@@ -505,10 +529,11 @@ class BDAIDataset(Dataset):
                     dim=2, keepdim=True)  # For grayscale images
 
             pixel_values[i] = img_normalized
-        return {'pixel_values': pixel_values, "task_text" : task}
+        return {'pixel_values': pixel_values, "task_text": task}
+
 
 class BDAIHighResJPGDataset(Dataset):
-    def __init__(self, num_samples=50, width=1024, height=576, sample_frames=25, original_fps = False):
+    def __init__(self, num_samples=50, width=1024, height=576, sample_frames=25, original_fps=False):
         """
         Args:
             num_samples (int): Number of samples in the dataset.
@@ -529,14 +554,16 @@ class BDAIHighResJPGDataset(Dataset):
         print("Done")
         self.original_fps = original_fps
         self.get_video(5)
-        
+
     def __len__(self):
         return self.num_samples
-    
+
     def get_video(self, idx):
         dir_name = self.dirs_with_jpgs[idx]
-        image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.jpg'))]
-        sorted_image_files = sorted(image_files, key=lambda x: int(x.split('_')[1].split('.')[0]))
+        image_files = [f for f in os.listdir(
+            dir_name) if f.lower().endswith(('.jpg'))]
+        sorted_image_files = sorted(
+            image_files, key=lambda x: int(x.split('_')[1].split('.')[0]))
 
         # image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.png'))]
         # sorted_image_files = image_files
@@ -557,17 +584,16 @@ class BDAIHighResJPGDataset(Dataset):
             start_idx = random.randint(0, max_start_idx)
             episode = episode[start_idx: start_idx+self.sample_frames]
 
-
     def get_samples(self, seq):
         N = len(seq)
-        ### uniformly sample {self.sample_per_seq} frames, including the first and last frame
+        # uniformly sample {self.sample_per_seq} frames, including the first and last frame
         samples = []
         for i in range(self.sample_per_seq-1):
             samples.append(int(i*(N-1)/(self.sample_per_seq-1)))
         samples.append(N-1)
         return [seq[i] for i in samples]
-    
-    def get_dirs_with_jpgs(self,base_path):
+
+    def get_dirs_with_jpgs(self, base_path):
         # Initialize a set to avoid duplicates
         dirs_with_jpgs = set()
 
@@ -579,7 +605,7 @@ class BDAIHighResJPGDataset(Dataset):
             # if any(file.lower().endswith('.png') for file in files):
             #     dirs_with_jpgs.add(root)
         return dirs_with_jpgs
-    
+
     def __getitem__(self, idx):
         """
         Args:
@@ -589,8 +615,10 @@ class BDAIHighResJPGDataset(Dataset):
             dict: A dictionary containing the 'pixel_values' tensor of shape (16, channels, 320, 512).
         """
         dir_name = self.dirs_with_jpgs[idx]
-        image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.jpg'))]
-        sorted_image_files = sorted(image_files, key=lambda x: int(x.split('_')[1].split('.')[0]))
+        image_files = [f for f in os.listdir(
+            dir_name) if f.lower().endswith(('.jpg'))]
+        sorted_image_files = sorted(
+            image_files, key=lambda x: int(x.split('_')[1].split('.')[0]))
 
         # image_files = [f for f in os.listdir(dir_name) if f.lower().endswith(('.png'))]
         # sorted_image_files = image_files
@@ -603,7 +631,7 @@ class BDAIHighResJPGDataset(Dataset):
                 img_array = np.array(img, dtype=np.uint8)
                 # Ensure the image has 3 channels (RGB)
                 episode.append(img_array)
-        
+
         if not self.original_fps:
             episode = self.get_samples(episode)
             original_episode = episode
@@ -614,17 +642,19 @@ class BDAIHighResJPGDataset(Dataset):
             original_episode = episode
             episode = episode[start_idx: start_idx+self.sample_frames]
 
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
+            if i > (self.sample_frames-1):
+                break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
-            
+
             # img_resized = np.resize(frame, (self.height, self.width, 3))
             img_tensor = torch.from_numpy(img_resized).float()
-            
+
             # Normalize the image by scaling pixel values to [-1, 1]
             img_normalized = img_tensor / 127.5 - 1
 
@@ -637,9 +667,10 @@ class BDAIHighResJPGDataset(Dataset):
                     dim=2, keepdim=True)  # For grayscale images
 
             pixel_values[i] = img_normalized
-            
+
         task = "robot doing a task"
-        return {'pixel_values': pixel_values, "task_text" : task, "original_episode": original_episode}
+        return {'pixel_values': pixel_values, "task_text": task, "original_episode": original_episode}
+
 
 class BDAIZoomInOutDataset(Dataset):
     def __init__(self, num_samples=10, width=1024, height=576, sample_frames=25):
@@ -654,7 +685,8 @@ class BDAIZoomInOutDataset(Dataset):
         self.height = height
         self.sample_frames = sample_frames
         # sequence_dirs = glob.glob(os.path.join("/storage/nfs/bdai_download_local", "**/out.npy"), recursive=True)
-        sequence_dirs = glob.glob(os.path.join("/storage/nfs/jpatel/bridge_data_bdai_mix_04_07_2024/bridge_data_bdai_mix_numpy/bdai/", "**/out.npy"), recursive=True)
+        sequence_dirs = glob.glob(os.path.join(
+            "/storage/nfs/jpatel/bridge_data_bdai_mix_04_07_2024/bridge_data_bdai_mix_numpy/bdai/", "**/out.npy"), recursive=True)
         self.sequences = []
         self.tasks = []
         self.sample_per_seq = sample_frames
@@ -663,7 +695,7 @@ class BDAIZoomInOutDataset(Dataset):
             obs, task = self.extract_seq(seq_dir)
             tasks.extend(task)
             obss.extend(obs)
-            
+
         self.sequences = obss
         self.tasks = tasks
         print("training_samples: ", len(self.sequences))
@@ -672,10 +704,10 @@ class BDAIZoomInOutDataset(Dataset):
         # To test __getitem__ function
         self.random_choice = 'zoom_in'
         self.load_image(idx)
-        
+
     def __len__(self):
         return self.num_samples
-    
+
     def load_image(self, idx):
         samples = self.sequences[idx]
         task = self.tasks[idx]
@@ -688,26 +720,28 @@ class BDAIZoomInOutDataset(Dataset):
             scale_factors = np.linspace(2, 1, 25)
             task = random.choice(["Zooming out", 'Shrinking an image'])
             self.random_choice = 'zoom_in'
-        
+
         for scale_factor in scale_factors:
             zoomed_image = self.zoom_in(samples[0], scale_factor)
             episode.append(zoomed_image)
         breakpoint()
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
-        
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
+
     def get_samples(self, seq):
         N = len(seq)
-        ### uniformly sample {self.sample_per_seq} frames, including the first and last frame
+        # uniformly sample {self.sample_per_seq} frames, including the first and last frame
         samples = []
         for i in range(self.sample_per_seq-1):
             samples.append(int(i*(N-1)/(self.sample_per_seq-1)))
         samples.append(N-1)
         return [seq[i] for i in samples]
-    
+
     def extract_seq(self, seqs_path):
         seqs = np.load(seqs_path, allow_pickle=True)
         extract_language_from_npy = "language" in seqs[0].keys()
-        task = [] if extract_language_from_npy else seqs_path.split('/')[-3].replace('_', ' ')
+        task = [] if extract_language_from_npy else seqs_path.split(
+            '/')[-3].replace('_', ' ')
         outputs = []
         for seq in seqs:
             observations = seq["observations"]
@@ -718,7 +752,7 @@ class BDAIZoomInOutDataset(Dataset):
                 sampled_obs = self.get_samples(full_obs)
                 outputs.append(sampled_obs)
                 if extract_language_from_npy:
-                    if seq['language'][0]=="":
+                    if seq['language'][0] == "":
                         task.append("Robot doing a task")
                     else:
                         task.append(seq['language'][0])
@@ -729,24 +763,24 @@ class BDAIZoomInOutDataset(Dataset):
     def zoom_in(self, image, scale_factor):
         # Get the center of the image
         center_x, center_y = image.shape[1] // 2, image.shape[0] // 2
-        
+
         # Calculate the new dimensions
         new_width = int(image.shape[1] * scale_factor)
         new_height = int(image.shape[0] * scale_factor)
 
-        
         # Resize the image
-        resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-        
+        resized_image = cv2.resize(
+            image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
         # Calculate the coordinates to crop the image to original size
         start_x = new_width // 2 - center_x
         start_y = new_height // 2 - center_y
         end_x = start_x + image.shape[1]
         end_y = start_y + image.shape[0]
-        
+
         # Crop the resized image to the original size
         zoomed_image = resized_image[start_y:end_y, start_x:end_x]
-        
+
         return zoomed_image
 
     def __getitem__(self, idx):
@@ -760,7 +794,7 @@ class BDAIZoomInOutDataset(Dataset):
         # Randomly select a dataset
         samples = self.sequences[idx]
         task = self.tasks[idx]
-        
+
         # frame_width, frame_height = image.shape[1], image.shape[0]
         self.random_choice = random.choice(["zoom_in", "zoom_out"])
         episode = []
@@ -772,23 +806,24 @@ class BDAIZoomInOutDataset(Dataset):
             scale_factors = np.linspace(2, 1, 25)
             task = random.choice(["Zooming out", 'Shrinking an image'])
             # self.random_choice = "zoom_in"
-        
+
         for scale_factor in scale_factors:
             zoomed_image = self.zoom_in(samples[0], scale_factor)
             episode.append(zoomed_image)
 
-        
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
+            if i > (self.sample_frames-1):
+                break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
-            
+
             # img_resized = np.resize(frame, (self.height, self.width, 3))
             img_tensor = torch.from_numpy(img_resized).float()
-            
+
             # Normalize the image by scaling pixel values to [-1, 1]
             img_normalized = img_tensor / 127.5 - 1
 
@@ -801,13 +836,15 @@ class BDAIZoomInOutDataset(Dataset):
                     dim=2, keepdim=True)  # For grayscale images
 
             pixel_values[i] = img_normalized
-            
-        return {'pixel_values': pixel_values, "task_text" : task}
+
+        return {'pixel_values': pixel_values, "task_text": task}
+
 
 class ShapeDataset(Dataset):
     """
     This dataset is only compatible with train_svd_lang.py
     """
+
     def __init__(self, num_samples=2, width=1024, height=576, sample_frames=25):
         """
         Args:
@@ -820,91 +857,101 @@ class ShapeDataset(Dataset):
         self.height = height
         self.sample_frames = sample_frames
         # self.get_images(5)
-        
-    def draw_circle(self, circle_center, image):
+
+    def draw_circle(self, circle_center, image, radius):
         # Draw a red circle
-        radius = 30
+        radius = radius
         color_red = (0, 0, 255)  # BGR format for red
         thickness = -1  # Solid fill
         cv2.circle(image, circle_center, radius, color_red, thickness)
         return image
-        
+
     def draw_square(self, square_center, image):
         # Draw a red circle
         side_length = 100
         thickness = -1  # Solid fill
-        top_left_vertex = (square_center[0] - side_length // 2, square_center[1] - side_length // 2)
+        top_left_vertex = (
+            square_center[0] - side_length // 2, square_center[1] - side_length // 2)
         color_blue = (255, 0, 0)  # BGR format for blue
-        cv2.rectangle(image, top_left_vertex, (top_left_vertex[0] + side_length, top_left_vertex[1] + side_length), color_blue, thickness)
+        cv2.rectangle(image, top_left_vertex, (
+            top_left_vertex[0] + side_length, top_left_vertex[1] + side_length), color_blue, thickness)
         return image
 
     def draw_triangle(self, triangle_center, image):
         # Draw a red circle
         side_length = 100
-        triangle_height = int(np.sqrt(3) / 2 * side_length)  # Height of the equilateral triangle
-        pts = np.array([ 
-            [triangle_center[0], triangle_center[1] - triangle_height // 2],  # Top vertex
-            [triangle_center[0] - side_length // 2, triangle_center[1] + triangle_height // 2],  # Bottom left vertex
-            [triangle_center[0] + side_length // 2, triangle_center[1] + triangle_height // 2]  # Bottom right vertex
+        # Height of the equilateral triangle
+        triangle_height = int(np.sqrt(3) / 2 * side_length)
+        pts = np.array([
+            [triangle_center[0], triangle_center[1] -
+                triangle_height // 2],  # Top vertex
+            [triangle_center[0] - side_length // 2, triangle_center[1] + \
+                triangle_height // 2],  # Bottom left vertex
+            [triangle_center[0] + side_length // 2, triangle_center[1] + \
+                triangle_height // 2]  # Bottom right vertex
         ], np.int32)
         pts = pts.reshape((-1, 1, 2))
         color_green = (0, 255, 0)  # BGR format for green
         cv2.fillPoly(image, [pts], color_green)
         return image
-        
+
     def __len__(self):
         return self.num_samples
-    
+
     def interpolate_points(self, p1, p2, n):
         x1, y1 = p1
         x2, y2 = p2
-        x_values = np.linspace(x1, x2, n+2).astype(int)  # n+2 because we include the endpoints
+        # n+2 because we include the endpoints
+        x_values = np.linspace(x1, x2, n+2).astype(int)
         y_values = np.linspace(y1, y2, n+2).astype(int)
         interpolated_points = list(zip(x_values, y_values))
         return interpolated_points
-    
+
     def get_images(self, idx):
         images = []
-        
+
         instructions = ["move the red square to blue circle.",
-        "move the red square to green triangle.",
-        "move the blue circle to green triangle."]
-        
+                        "move the red square to green triangle.",
+                        "move the blue circle to green triangle."]
+
         square_center_start = (100, 270)
         square_center_end = (100, 270)
-        
+
         triangle_center_start = (70, 70)
         triangle_center_end = (70, 70)
-        
+
         circle_center_start = (400, 230)
         circle_center_end = (400, 230)
-        
-        instruction = instructions[idx%3]
-        
-        if instruction=="move the red square to blue circle.":
+
+        instruction = instructions[idx % 3]
+
+        if instruction == "move the red square to blue circle.":
             square_center_end = circle_center_end
-        elif instruction=="move the red square to green triangle.":
+        elif instruction == "move the red square to green triangle.":
             square_center_end = triangle_center_end
         else:
             circle_center_end = triangle_center_end
 
-        square_centers = self.interpolate_points(square_center_start, square_center_end, self.sample_frames)
-        circle_centers = self.interpolate_points(circle_center_start, circle_center_end, self.sample_frames)
-        triangle_centers = self.interpolate_points(triangle_center_start, triangle_center_end, self.sample_frames)
-        
+        square_centers = self.interpolate_points(
+            square_center_start, square_center_end, self.sample_frames)
+        circle_centers = self.interpolate_points(
+            circle_center_start, circle_center_end, self.sample_frames)
+        triangle_centers = self.interpolate_points(
+            triangle_center_start, triangle_center_end, self.sample_frames)
+
         for i in range(self.sample_frames):
             # Create a blank image
             image = np.zeros((320, 512, 3), dtype=np.uint8)
 
             # Draw shapes
-            image = self.draw_circle(circle_centers[i], image)
-            image = self.draw_square(square_centers[i], image)
-            if instruction=="move the red square to blue circle.":
+            image = self.draw_circle(circle_centers[i], image, 30)
+            image = self.draw_square(square_centers[i], image, 30)
+            if instruction == "move the red square to blue circle.":
                 image = self.draw_triangle(triangle_centers[i], image)
             cv2.imwrite('shapes.png', image)
             time.sleep(0.3)
         breakpoint()
-    
+
     def __getitem__(self, idx):
         """
         Args:
@@ -915,26 +962,28 @@ class ShapeDataset(Dataset):
         """
         # Save the image
         episode = []
-        
-        instructions = ["move the red square to blue circle.",
-        "move the red square to green triangle."]
+
+        # instructions = ["move the red square to blue circle",
+        #                 "move the red square to green triangle"]
         # "move the blue circle to green triangle."]
-        
+        instructions = ["blue circle",
+                        "green triangle"]
+
         square_center_start = (100, 270)
         square_center_end = (100, 270)
-        
+
         triangle_center_start = (70, 70)
         triangle_center_end = (70, 70)
-        
+
         circle_center_start = (400, 230)
         circle_center_end = (400, 230)
-        
-        instruction = instructions[idx%2]
-        
-        if instruction=="move the red square to blue circle.":
+
+        instruction = instructions[idx % 2]
+
+        if instruction == "blue circle":
             # print(f"picking 0 : {instruction}")
             square_center_end = circle_center_end
-        elif instruction=="move the red square to green triangle.":
+        elif instruction == "green triangle":
             square_center_end = triangle_center_end
             # print(f"picking 1 : {instruction}")
         else:
@@ -942,32 +991,49 @@ class ShapeDataset(Dataset):
         # else:
         #     circle_center_end = triangle_center_end
 
-        square_centers = self.interpolate_points(square_center_start, square_center_end, self.sample_frames)
-        circle_centers = self.interpolate_points(circle_center_start, circle_center_end, self.sample_frames)
-        triangle_centers = self.interpolate_points(triangle_center_start, triangle_center_end, self.sample_frames)
-        
+        square_centers = self.interpolate_points(
+            square_center_start, square_center_end, self.sample_frames)
+        circle_centers = self.interpolate_points(
+            circle_center_start, circle_center_end, self.sample_frames)
+        triangle_centers = self.interpolate_points(
+            triangle_center_start, triangle_center_end, self.sample_frames)
+
         for i in range(self.sample_frames):
             # Create a blank image
             image = np.zeros((320, 512, 3), dtype=np.uint8)
 
             # Draw shapes
-            image = self.draw_circle(circle_centers[i], image)
+            image = self.draw_circle(circle_centers[i], image, 30)
             image = self.draw_square(square_centers[i], image)
             image = self.draw_triangle(triangle_centers[i], image)
-            cv2.imwrite('shapes.png', image)
+
+            # Save conditioning images
+            cond_image = np.zeros((320, 512, 3), dtype=np.uint8)
+            if i == 0:
+                cond_image_1 = self.draw_circle(
+                    square_centers[i], cond_image, 10)
+                # cv2.imwrite(f"./{idx%2}/cond_image_{i}.png", cond_image_1)
+            if i == 24:
+                cond_image_2 = self.draw_circle(
+                    square_centers[i], cond_image, 10)
+                # cv2.imwrite(f"./{idx%2}/cond_image_{i}.png", cond_image_2)
+
+            cv2.imwrite(f"./{idx%2}/image_{i}.png", image)
             episode.append(image)
 
-        pixel_values = torch.empty((self.sample_frames, self.channels, self.height, self.width))
+        pixel_values = torch.empty(
+            (self.sample_frames, self.channels, self.height, self.width))
 
         # Load and process each frame
         for i, frame in enumerate(episode):
-            if i > (self.sample_frames-1): break
+            if i > (self.sample_frames-1):
+                break
             # Resize the image and convert it to a tensor
             img_resized = cv2.resize(frame, (self.width, self.height))
-            
+
             # img_resized = np.resize(frame, (self.height, self.width, 3))
             img_tensor = torch.from_numpy(img_resized).float()
-                        
+
             # Normalize the image by scaling pixel values to [-1, 1]
             img_normalized = img_tensor / 127.5 - 1
 
@@ -980,5 +1046,26 @@ class ShapeDataset(Dataset):
                     dim=2, keepdim=True)  # For grayscale images
 
             pixel_values[i] = img_normalized
-            
-        return {'pixel_values': pixel_values, "task_text" : instruction, "original_episode":episode}
+
+        condition_frames = []
+        for i, frame in enumerate([cond_image_1, cond_image_2]):
+            # Resize the image and convert it to a tensor
+            img_resized = cv2.resize(frame, (self.width, self.height))
+
+            # img_resized = np.resize(frame, (self.height, self.width, 3))
+            img_tensor = torch.from_numpy(img_resized).float()
+
+            # Normalize the image by scaling pixel values to [-1, 1]
+            img_normalized = img_tensor / 127.5 - 1
+
+            # Rearrange channels if necessary
+            if self.channels == 3:
+                img_normalized = img_normalized.permute(
+                    2, 0, 1)  # For RGB images
+            elif self.channels == 1:
+                img_normalized = img_normalized.mean(
+                    dim=2, keepdim=True)  # For grayscale images
+
+            condition_frames.append(img_normalized)
+
+        return {'pixel_values': pixel_values, "task_text": instruction, "original_episode": episode}
