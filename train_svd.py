@@ -61,7 +61,7 @@ import json
 import time
 import wandb
 import cv2
-from dummy_dataset import DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
+from datasets.dummy_dataset import DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
 
 from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import metrics

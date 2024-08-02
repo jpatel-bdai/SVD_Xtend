@@ -53,7 +53,7 @@ from diffusers.training_utils import EMAModel
 from diffusers.utils import check_min_version, deprecate, is_wandb_available, load_image
 from diffusers.utils.import_utils import is_xformers_available
 
-from dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset
+from datasets.dummy_dataset import DummyDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset
 import metrics
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.

@@ -62,7 +62,7 @@ import json
 import time
 import wandb
 import cv2
-from dummy_dataset import ShapeDataset, DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
+from datasets.dummy_dataset import ShapeDataset, DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
 
 from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import metrics
@@ -1166,7 +1166,7 @@ def main():
                 # Add noise to the latents according to the noise magnitude at each timestep
                 # (this is the forward diffusion process)
                 sigmas = sigmas[:, None, None, None, None]
-                noisy_latents = noise
+                noisy_latents = latents + noise * sigmas
                 timesteps = torch.Tensor(
                     [0.25 * sigma.log() for sigma in sigmas]).to(accelerator.device)
 
@@ -1195,28 +1195,28 @@ def main():
                 # check out the section 3.2.1 of the original paper https://arxiv.org/abs/2211.09800.
                 # breakpoint()
 
-                # if args.conditioning_dropout_prob is not None:
-                #     random_p = torch.rand(
-                #         bsz, device=latents.device, generator=generator)
-                #     # Sample masks for the edit prompts.
-                #     prompt_mask = random_p < 2 * args.conditioning_dropout_prob
-                #     prompt_mask = prompt_mask.reshape(bsz, 1, 1)
+                if args.conditioning_dropout_prob is not None:
+                    random_p = torch.rand(
+                        bsz, device=latents.device, generator=generator)
+                    # Sample masks for the edit prompts.
+                    prompt_mask = random_p < 2 * args.conditioning_dropout_prob
+                    prompt_mask = prompt_mask.reshape(bsz, 1, 1)
 
-                #     # Final text conditioning. - Fix this to have the conditioning all the times.
-                #     null_conditioning = torch.zeros_like(encoder_hidden_states)
-                #     encoder_hidden_states = torch.where(
-                #         prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
-                #     # Sample masks for the original images.
-                #     image_mask_dtype = conditional_latents.dtype
-                #     image_mask = 1 - (
-                #         (random_p >= args.conditioning_dropout_prob).to(
-                #             image_mask_dtype)
-                #         * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
-                #     )
-                #     image_mask = image_mask.reshape(bsz, 1, 1, 1)
-                #     # Final image conditioning.
-                #     conditional_latents = image_mask * conditional_latents
-                encoder_hidden_states = encoder_hidden_states.unsqueeze(0)
+                    # Final text conditioning. - Fix this to have the conditioning all the times.
+                    null_conditioning = torch.zeros_like(encoder_hidden_states)
+                    encoder_hidden_states = torch.where(
+                        prompt_mask, null_conditioning.unsqueeze(1), encoder_hidden_states.unsqueeze(1))
+                    # Sample masks for the original images.
+                    image_mask_dtype = conditional_latents.dtype
+                    image_mask = 1 - (
+                        (random_p >= args.conditioning_dropout_prob).to(
+                            image_mask_dtype)
+                        * (random_p < 3 * args.conditioning_dropout_prob).to(image_mask_dtype)
+                    )
+                    image_mask = image_mask.reshape(bsz, 1, 1, 1)
+                    # Final image conditioning.
+                    conditional_latents = image_mask * conditional_latents
+                # encoder_hidden_states = encoder_hidden_states.unsqueeze(0)
 
                 # conditional_latents_3 = conditional_latents[:,2,:].unsqueeze(1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
                 # conditional_latents = conditional_latents_1 + conditional_latents_2 + conditional_latents_3
@@ -1446,7 +1446,7 @@ def main():
                                         noise_aug_strength=0.02,
                                         task_text=val_texts[val_img_idx],
                                         min_guidance_scale=1.0,
-                                        max_guidance_scale=1.0
+                                        max_guidance_scale=3.0
                                         # generator=generator,
                                     ).frames[0]
                                     all_frames.extend(video_frames)
