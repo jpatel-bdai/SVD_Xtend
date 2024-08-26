@@ -57,17 +57,14 @@ from torch.utils.data import Dataset
 import numpy as np
 import os
 from pathlib import Path
-import json
 import time
 import wandb
 import cv2
-from datasets.dummy_dataset import DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
+from data.rtx_dataset import RTXDataset
+from data.bdai_dataset import LiberoDataset
 
 from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import metrics
-
-# text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
-# text_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.24.0.dev0")
@@ -277,6 +274,7 @@ def tensor_to_vae_latent(t, vae):
     video_length = t.shape[1]
 
     t = rearrange(t, "b f c h w -> (b f) c h w")
+    breakpoint()
     latents = vae.encode(t).latent_dist.sample()
     latents = rearrange(latents, "(b f) c h w -> b f c h w", f=video_length)
     latents = latents * vae.config.scaling_factor
@@ -586,10 +584,10 @@ val_texts = []
 gt_videos = []
 def save_validation_images(train_dataloader, accelerator, num_validaton_images):
     saved_imgs = 0
-    print("Uploading groud truth images")
+    print("Uploading ground truth images")
     for step, batch in enumerate(train_dataloader):
         if saved_imgs > (num_validaton_images - 1): break
-        print(f"Uploading groud truth images {saved_imgs}")
+        print(f"Uploading ground truth images {saved_imgs}")
         img_tensor = batch['pixel_values'][0][0]
         original_episode = batch['original_episode']
         validation_original_frames.append(original_episode.shape[1])
@@ -714,9 +712,7 @@ def main():
     # Load scheduler, tokenizer and models.
     noise_scheduler = EulerDiscreteScheduler.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="scheduler")
-    feature_extractor = CLIPImageProcessor.from_pretrained(
-        args.pretrained_model_name_or_path, subfolder="feature_extractor", revision=args.revision
-    )
+    feature_extractor = CLIPImageProcessor.from_pretrained(args.pretrained_model_name_or_path, subfolder="feature_extractor", revision=args.revision)
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="image_encoder", revision=args.revision, variant="fp16"
     )
@@ -871,27 +867,32 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_data = RTXDataset(width=args.width, height=args.height, sample_frames=args.num_frames, original_fps = True)
-    train_dataset, test_dataset = torch.utils.data.random_split(train_data, [0.9, 0.1])
-    
-    sampler = RandomSampler(train_dataset)
+    dataset = LiberoDataset(width=args.width, height=args.height, sample_frames=args.num_frames)
+    # train_dataset, val_dataset = torch.utils.data.random_split(dataset, [0.9, 0.1])
+    train_size = int(0.9 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset = torch.utils.data.Subset(dataset, range(train_size))
+    val_dataset = torch.utils.data.Subset(dataset, range(train_size, train_size + val_size))
+
+    # sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        sampler=sampler,
+        # sampler=sampler,
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
     
-    test_sampler = RandomSampler(test_dataset)
-    test_dataloader = torch.utils.data.DataLoader(
-        test_dataset,
-        sampler=test_sampler,
+    # val_sampler = RandomSampler(val_dataset)
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
+        # sampler=val_sampler,
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
         multiprocessing_context='spawn'
     )
+    
     # train_dataloader.dataset.sample_validation = True
-    save_validation_images(test_dataloader, accelerator, args.num_validation_images)
+    save_validation_images(val_dataloader, accelerator, args.num_validation_images)
     # train_dataloader.dataset.sample_validation = False
     
     # Scheduler and math around the number of training steps.
@@ -1035,7 +1036,6 @@ def main():
 
             with accelerator.accumulate(unet):
                 # first, convert images to latent space.
-                
                 pixel_values = batch["pixel_values"].to(weight_dtype).to(
                     accelerator.device, non_blocking=True
                 )
@@ -1044,6 +1044,7 @@ def main():
                 conditional_pixel_values = pixel_values[:, 0:1, :, :, :]
 
                 latents = tensor_to_vae_latent(pixel_values, vae)
+                breakpoint()
                 # single_latent = latents[:, 0:1, 0:1, :, :]
                 # save_img_from_tensor(latents[:, 0:1, 0:1, :, :].squeeze(0).squeeze(0).repeat(3,1,1).cpu(), "latents")
                 
@@ -1145,6 +1146,7 @@ def main():
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(
                     loss.repeat(args.per_gpu_batch_size)).mean()
+                # Why is train loss accumulated???
                 train_loss += avg_loss.item() / args.gradient_accumulation_steps
 
                 # Backpropagate
@@ -1293,9 +1295,7 @@ def main():
                                 ssim = metrics.get_ssim()
                                 psnr = metrics.get_psnr()
                                 lpips = metrics.get_lpips(device=pipeline.device)
-                                # breakpoint()
                                 test_ssim_val = ssim(predt, gtt)[0]
-                                # breakpoint()
                                 # test_lpips_val = lpips(predt, gtt)[0]
                                 # test_psnr_val = psnr(predt, gtt)[0]
                                 test_ssim.append(test_ssim_val)

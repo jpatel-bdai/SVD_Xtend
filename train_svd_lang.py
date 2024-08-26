@@ -62,10 +62,15 @@ import json
 import time
 import wandb
 import cv2
-from datasets.dummy_dataset import ShapeDataset, DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
+# from datasets.dummy_dataset import LiberoDataset, ShapeDataset, DummyDataset, RTXDataset, BDAIDataset, BDAIZoomInOutDataset, BDAIHighResJPGDataset, RTXHeliosTrainTestSplitDataset
+from data.bdai_dataset import LiberoDataset
 
 from transformers import AutoTokenizer, CLIPTextModelWithProjection
 import metrics
+
+from positional_encodings.torch_encodings import PositionalEncoding1D
+
+p_enc_1d_model = PositionalEncoding1D(1024)
 
 # text_model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")
 # text_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
@@ -598,10 +603,10 @@ def save_validation_images(train_dataloader, accelerator, num_validaton_images):
             break
         print(f"Uploading groud truth images {saved_imgs}")
         img_tensor = batch['pixel_values'][0][0]
-        original_episode = torch.stack(batch['original_episode'])
-        validation_original_frames.append(len(original_episode))
+        original_episode = batch['original_episode']
+        validation_original_frames.append(original_episode.shape[1])
         original_video = original_episode.squeeze(
-            1).permute(0, 3, 1, 2).cpu().detach().numpy()
+            0).permute(0, 3, 1, 2).cpu().detach().numpy()
         # original_video = torch.stack(original_episode, dim=0).squeeze(1).permute(0,3,1,2).cpu().detach().numpy()
         video_array_resized = np.zeros(
             (*original_video.shape[:2], 128, 128))  # 320, 512
@@ -712,7 +717,7 @@ def main():
         project_name="svd_language_test",
         # config={"dropout": 0.1, "learning_rate": 1e-2}
         init_kwargs={"wandb": {"dir": root_dir,
-                               "id": timestr, "name": "svd_lang_shape_dataset"}}
+                               "id": timestr, "name": "svd_lang_libero_goal_pos_emb"}}
     )
 
     generator = torch.Generator(
@@ -801,7 +806,10 @@ def main():
     text_encoder.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     # unet.to(accelerator.device, dtype=weight_dtype)
-
+    projection_layer = torch.nn.Sequential(
+        torch.nn.Linear(512, 1024),
+        torch.nn.ReLU()
+    ).to(accelerator.device, dtype=weight_dtype)
     # Create EMA for the unet.
     if args.use_ema:
         ema_unet = EMAModel(unet.parameters(
@@ -926,28 +934,29 @@ def main():
     # DataLoaders creation:
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    train_data = ShapeDataset(
+    train_data = LiberoDataset(
         width=args.width, height=args.height, sample_frames=args.num_frames)
-    # train_dataset, test_dataset = torch.utils.data.random_split(train_data, [0.9, 0.1])
+    train_dataset, test_dataset = torch.utils.data.random_split(train_data, [0.9, 0.1])
 
-    sampler = RandomSampler(train_data)
+    # sampler = RandomSampler(train_data)
     train_dataloader = torch.utils.data.DataLoader(
         train_data,
-        sampler=sampler,
+        # sampler=sampler,
         batch_size=args.per_gpu_batch_size,
         num_workers=args.num_workers,
     )
 
     # test_sampler = RandomSampler(test_dataset)
-    # test_dataloader = torch.utils.data.DataLoader(
-    #     test_dataset,
-    #     sampler=test_sampler,
-    #     batch_size=args.per_gpu_batch_size,
-    #     num_workers=args.num_workers,
-    #     multiprocessing_context='spawn'
-    # )
+    test_dataloader = torch.utils.data.DataLoader(
+        test_dataset,
+        # sampler=test_sampler,
+        batch_size=args.per_gpu_batch_size,
+        num_workers=args.num_workers,
+        multiprocessing_context='spawn'
+    )
+
     # train_dataloader.dataset.sample_validation = True
-    save_validation_images(train_dataloader, accelerator,
+    save_validation_images(test_dataloader, accelerator,
                            args.num_validation_images)
     # train_dataloader.dataset.sample_validation = False
 
@@ -1055,12 +1064,19 @@ def main():
         #     "stabilityai/sable-diffusion-2-1", subfolder="tokenizer", revision=args.revision, variant="fp16")
         inputs = tokenizer(task_text, padding=True, return_tensors="pt").to(
             device=accelerator.device)
-        outputs = text_encoder(**inputs).last_hidden_state.to(
+        
+        # Hidden state
+        outputs_hidden_state = text_encoder(**inputs).last_hidden_state.to(
             device=accelerator.device, dtype=weight_dtype)
-        # image_text_embeds = outputs
-        image_text_embeds = torch.cat(
-            (outputs, image_embeddings.unsqueeze(1)), dim=1)
-
+        penc_no_sum = p_enc_1d_model(torch.zeros_like(outputs_hidden_state,device="cpu")).to(
+            device=accelerator.device, dtype=weight_dtype)
+        outputs_hidden_state = penc_no_sum + outputs_hidden_state
+        image_text_embeds = torch.cat((outputs_hidden_state, image_embeddings.unsqueeze(1)), dim=1)
+        
+        # Projection layer
+        # outputs_text_embeds = text_encoder(**inputs).text_embeds.to(device=accelerator.device, dtype=weight_dtype)
+        # output_projection_layer = projection_layer(outputs_text_embeds)
+        # image_text_embeds = torch.cat((output_projection_layer, image_embeddings), dim=0).unsqueeze(0)
         return image_text_embeds
 
     def _get_add_time_ids(
@@ -1175,13 +1191,15 @@ def main():
                 # Get the text embedding for conditioning.
                 encoder_hidden_states = encode_image(
                     pixel_values[:, 0, :, :, :].float())
+                encoder_hidden_states = encoder_hidden_states.unsqueeze(0)
 
                 encoder_hidden_states = encode_image_and_text(
                     pixel_values[:, 0, :, :, :].float(), batch["task_text"])
-
                 # Here I input a fixed numerical value for 'motion_bucket_id', which is not reasonable.
                 # However, I am unable to fully align with the calculation method of the motion score,
                 # so I adopted this approach. The same applies to the 'fps' (frames per second).
+                
+                
                 added_time_ids = _get_add_time_ids(
                     7,  # fixed
                     127,  # motion_bucket_id = 127, fixed  # This&That says 200 is better
@@ -1216,56 +1234,17 @@ def main():
                     image_mask = image_mask.reshape(bsz, 1, 1, 1)
                     # Final image conditioning.
                     conditional_latents = image_mask * conditional_latents
-                # encoder_hidden_states = encoder_hidden_states.unsqueeze(0)
 
-                # conditional_latents_3 = conditional_latents[:,2,:].unsqueeze(1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
-                # conditional_latents = conditional_latents_1 + conditional_latents_2 + conditional_latents_3
                 # Concatenate the `conditional_latents` with the `noisy_latents`.
                 conditional_latents = conditional_latents.unsqueeze(
                     1).repeat(1, noisy_latents.shape[1], 1, 1, 1)
-
-                # inp_noisy_latents_video = inp_noisy_latents[0, :, 0:3].cpu(
-                # ).detach().numpy()
-                # accelerator.log({f"training_pred_video_latents_{global_step}": wandb.Video(
-                #     video_latents, fps=4)}, step=global_step)
-                # converted_vid_tensor = convert_tensor_to_video(
-                #     inp_noisy_latents)
-
-                # normalized_video_tensor1 = converted_vid_tensor[0, :, 0:1].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-                # normalized_video_tensor2 = converted_vid_tensor[0, :, 1:2].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-                # normalized_video_tensor3 = converted_vid_tensor[0, :, 2:3].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-                # normalized_video_tensor4 = converted_vid_tensor[0, :, 3:4].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-
-                # accelerator.log({f"inp_noisy_latents_1_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     normalized_video_tensor1, fps=4)}, step=global_step)
-
-                # accelerator.log({f"inp_noisy_latents_2_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     normalized_video_tensor2, fps=4)}, step=global_step)
-
-                # accelerator.log({f"inp_noisy_latents_3_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     normalized_video_tensor3, fps=4)}, step=global_step)
-
-                # accelerator.log({f"inp_noisy_latents_4_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     normalized_video_tensor4, fps=4)}, step=global_step)
 
                 inp_noisy_latents = torch.cat(
                     [inp_noisy_latents, conditional_latents], dim=2)
 
                 # check https://arxiv.org/abs/2206.00364(the EDM-framework) for more details.
                 target = latents
-                # for i in range(5):
-                #     for j in range(8):
-                #         save_img_from_tensor(
-                #             inp_noisy_latents[0][i*5][j:j+1], f"inp_noisy_{i}_{j}")
-                # for i in range(5):
-                #     for j in range(4):
-                #         save_img_from_tensor(
-                #             target[0][i*5][j:j+1], f"target_{i}_{j}")
-
+                
                 encoder_hidden_states = encoder_hidden_states.squeeze(0)
                 model_pred = unet(inp_noisy_latents, timesteps,
                                   encoder_hidden_states, added_time_ids=added_time_ids).sample
@@ -1285,39 +1264,6 @@ def main():
 
                 converted_denoised_vid_tensor = convert_tensor_to_video(
                     denoised_latents)
-
-                # denoised_video_latents1 = converted_denoised_vid_tensor[0, :, 0:1].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-                # denoised_video_latents2 = converted_denoised_vid_tensor[0, :, 1:2].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-                # denoised_video_latents3 = converted_denoised_vid_tensor[0, :, 2:3].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-                # denoised_video_latents4 = converted_denoised_vid_tensor[0, :, 3:4].repeat(1, 3, 1, 1).cpu(
-                # ).detach().numpy()
-
-                # video_latents = denoised_latents[0,
-                #                                  :, 0:3].cpu().detach().numpy()
-                # # accelerator.log({f"training_pred_video_latents_{global_step}": wandb.Video(
-                # #     video_latents, fps=4)}, step=global_step)
-                # accelerator.log({f"denoised_latents_1_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     video_latents, fps=4)}, step=global_step)
-                # accelerator.log({f"denoised_latents_2_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     video_latents, fps=4)}, step=global_step)
-                # accelerator.log({f"denoised_latents_3_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     video_latents, fps=4)}, step=global_step)
-                # accelerator.log({f"denoised_latents_4_{batch['task_text'][0]}/pred_{global_step}": wandb.Video(
-                #     video_latents, fps=4)}, step=global_step)
-                # for i in range(5):
-                #     for j in range(4):
-                #         save_img_from_tensor(
-                #             target[0][i*5][j:j+1], f"target_{i}_{j}")
-
-                # for i in range(5):
-                #     for j in range(4):
-                #         save_img_from_tensor(
-                #             denoised_latents[0][i*5][j:j+1], f"denoised_latents_{i}_{j}")
-                # print(batch["task_text"])
-                # print(encoder_hidden_states)
 
                 # MSE loss
                 loss = torch.mean(
@@ -1339,7 +1285,8 @@ def main():
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
-
+                torch.save({'weight': projection_layer.state_dict()['0.weight'],'bias': projection_layer.state_dict()['0.bias'],'encoder_hidden_states': encoder_hidden_states}, f'/storage/nfs/jpatel/debug/tensor_svd_{step}.pth')
+                
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
                 if args.use_ema:
@@ -1395,6 +1342,8 @@ def main():
                             # Store the UNet parameters temporarily and load the EMA parameters to perform inference.
                             ema_unet.store(unet.parameters())
                             ema_unet.copy_to(unet.parameters())
+                        print(projection_layer.state_dict())
+                        # projection_layer_weights = 
                         # The models need unwrapping because for compatibility in distributed training mode.
                         pipeline = StableVideoDiffusionPipeline.from_pretrained(
                             args.pretrained_model_name_or_path,
@@ -1405,6 +1354,7 @@ def main():
                             tokenizer=tokenizer,
                             text_encoder=accelerator.unwrap_model(
                                 text_encoder),
+                            projection_layer=accelerator.unwrap_model(projection_layer),
                             revision=args.revision,
                             torch_dtype=weight_dtype
                         )
